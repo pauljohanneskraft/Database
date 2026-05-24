@@ -47,20 +47,6 @@ swift run sql mydb --open-only                # fail if the database doesn't alr
 
 A query falls through these layers from top to bottom. Each is a directory under `Sources/Database/`.
 
-```
-            SQL text  ──►  Lexer ─► Parser ─► SemanticAnalysis ─► Planner
-                                                                     │
-                                                          operator tree (iterator model)
-                                                                     │
-   TableScan / IndexScan ─► Select ─► HashJoin ─► Projection ─► Print
-                    │
-            SlottedPages (rows)         BTree (indexes)
-                    │                        │
-                    └────────► BufferManager ◄┘     caches pages in RAM
-                                    │
-                                Storage           reads/writes files on disk
-```
-
 | Layer | Where | What it does |
 |---|---|---|
 | **Storage** | `Storage/` | Raw file I/O. `File` is the protocol; `PosixFile` is the `pread`/`pwrite` implementation. `Mutex` / `RWLock` are the locking primitives the upper layers latch with. |
