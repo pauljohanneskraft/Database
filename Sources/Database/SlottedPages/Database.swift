@@ -189,7 +189,7 @@ public final class Database {
                 let length = Int(column.type.length)
                 let chars = Array(s.utf8)
                 for j in 0..<length {
-                    buffer.append(j < chars.count ? chars[j] : 0x20)  // space pad
+                    buffer.append(j < chars.count ? chars[j] : 0x00)  // NUL fill
                 }
             }
         }
@@ -208,7 +208,7 @@ public final class Database {
     }
 
     /// Read a row previously inserted with `insert`. Returns the columns as
-    /// strings (integers are decoded; chars include any padding, trimmed).
+    /// strings (integers are decoded; char content runs up to the NUL fill).
     public func readTuple(table: SchemaTable, tid: TID) throws -> [String] {
         guard let sp = slottedPages[table.spSegment] else {
             throw DatabaseError.unknownTable
@@ -231,9 +231,11 @@ public final class Database {
             case .char:
                 let length = Int(column.type.length)
                 if cursor + length > Int(read) { return out }
-                let slice = readBuffer[cursor..<(cursor + length)]
-                let s = String(bytes: slice, encoding: .utf8) ?? ""
-                out.append(s.trimmingCharacters(in: .whitespaces))
+                // Content runs up to the first NUL fill byte, or the whole field.
+                var end = cursor
+                let fieldEnd = cursor + length
+                while end < fieldEnd && readBuffer[end] != 0 { end += 1 }
+                out.append(String(decoding: readBuffer[cursor..<end], as: UTF8.self))
                 cursor += length
             }
         }

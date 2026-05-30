@@ -155,6 +155,11 @@ public struct Lexer {
         case "not":    return .not
         case "true":   return .trueKW
         case "false":  return .falseKW
+        case "order":  return .order
+        case "by":     return .by
+        case "group":  return .group
+        case "asc":    return .asc
+        case "desc":   return .desc
         case "union":     return .union
         case "intersect": return .intersect
         case "except":    return .except

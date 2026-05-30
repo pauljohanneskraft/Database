@@ -287,6 +287,11 @@ public final class Sort: UnaryOperator, Operator {
 
     private let criteria: [Criterion]
     private let memoryBudgetBytes: Int?
+    /// Per-attribute wire payload widths for the budgeted external-sort path
+    /// (char → declared width, `int64`/`double` → 8, `bool` → 1). Required only
+    /// when `memoryBudgetBytes` is set; the in-memory path orders `Register`s
+    /// directly and ignores it.
+    private let attributeWidths: [Int]?
 
     private var collected = false
     private var results: [[Register]] = []
@@ -294,9 +299,15 @@ public final class Sort: UnaryOperator, Operator {
 
     private var spillover: SortSpillover?
 
-    public init(input: any Operator, criteria: [Criterion], memoryBudgetBytes: Int? = nil) {
+    public init(
+        input: any Operator,
+        criteria: [Criterion],
+        memoryBudgetBytes: Int? = nil,
+        attributeWidths: [Int]? = nil
+    ) {
         self.criteria = criteria
         self.memoryBudgetBytes = memoryBudgetBytes
+        self.attributeWidths = attributeWidths
         super.init(input: input)
     }
 
@@ -314,9 +325,9 @@ public final class Sort: UnaryOperator, Operator {
         }
         collected = true
 
-        // No budget → sort entirely in memory. This is the planner's default
-        // path; nothing touches disk.
-        guard let budget = memoryBudgetBytes else {
+        // No budget (or no column widths) → sort entirely in memory. This is
+        // the planner's default path; nothing touches disk.
+        guard let budget = memoryBudgetBytes, let widths = attributeWidths else {
             let cmp = makeComparator(criteria: criteria)
             while input.next() {
                 results.append(snapshot(input.getOutput()))
@@ -327,13 +338,13 @@ public final class Sort: UnaryOperator, Operator {
 
         // Budgeted → stream every row through the file-based external sort,
         // which keeps peak memory under `budget` bytes.
-        let rawCmp = makeRowComparator(criteria: criteria)
+        let rawCmp = makeRowComparator(criteria: criteria, attributeWidths: widths)
         var spill: SortSpillover? = nil
         while input.next() {
             let row = input.getOutput()
             if spill == nil {
                 spill = try? SortSpillover.create(
-                    registerCount: row.count,
+                    attributeWidths: widths,
                     memSize: budget,
                     compare: rawCmp
                 )

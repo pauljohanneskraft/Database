@@ -1,5 +1,6 @@
 /// A register represents a single attribute value passed between operators.
-/// Tagged union over `Int64`, a fixed 16-byte string, `Double`, or `Bool`.
+/// Tagged union over `Int64`, a variable-length char string, `Double`, or
+/// `Bool`.
 ///
 /// Reference type: operators publish stable register identities once during
 /// `open()`; subsequent `next()` calls mutate the underlying value in place
@@ -7,6 +8,10 @@
 public final class Register: @unchecked Sendable {
     public enum Kind: UInt8, Sendable {
         case int64
+        /// A char column's value. Historically a fixed 16-byte payload; now a
+        /// variable-length UTF-8 content buffer (`stringStorage`) holding only
+        /// the meaningful bytes — no trailing pad. The declared `CHAR(n)` width
+        /// is a disk/wire concern, not the register's.
         case char16
         case double
         case bool
@@ -14,10 +19,15 @@ public final class Register: @unchecked Sendable {
 
     public private(set) var kind: Kind
 
-    /// 16 bytes of inline storage. `char16` uses both halves; `int64`,
-    /// `double`, and `bool` use only `storage.0` (bit-cast for double,
-    /// `0`/`1` for bool).
+    /// Inline scalar storage. `int64` / `double` / `bool` use only `storage.0`
+    /// (bit-cast for double, `0`/`1` for bool). Unused by `char16`.
     private var storage: (UInt64, UInt64)
+
+    /// Variable-length UTF-8 content for `char16` (no trailing pad). The buffer
+    /// keeps its capacity across `setString` calls so per-row mutation in the
+    /// iterator model does not reallocate once it stabilises at the widest
+    /// content seen.
+    private var stringStorage: [UInt8] = []
 
     public init() {
         self.kind = .int64
@@ -53,19 +63,16 @@ public final class Register: @unchecked Sendable {
         storage = (UInt64(bitPattern: value), 0)
     }
 
-    /// Copies up to 16 bytes from `value`'s UTF-8 representation. Bytes past
-    /// the end of `value` (when shorter than 16) are zero. Tests always pass
-    /// strings of exactly 16 bytes.
+    /// Stores `value`'s UTF-8 content, stopping at the first NUL (`0x00`) —
+    /// the on-disk fill byte, so a value read back from a fixed-width field
+    /// keeps only its content. No length cap and no trailing pad; the buffer's
+    /// capacity is reused to avoid per-row allocation.
     public func setString(_ value: String) {
         kind = .char16
-        storage = (0, 0)
-        withUnsafeMutableBytes(of: &storage) { dst in
-            var written = 0
-            for byte in value.utf8 {
-                if written == 16 { break }
-                dst[written] = byte
-                written &+= 1
-            }
+        stringStorage.removeAll(keepingCapacity: true)
+        for byte in value.utf8 {
+            if byte == 0 { break }
+            stringStorage.append(byte)
         }
     }
 
@@ -84,9 +91,7 @@ public final class Register: @unchecked Sendable {
     }
 
     public var asString: String {
-        withUnsafeBytes(of: storage) { raw in
-            String(decoding: raw, as: UTF8.self)
-        }
+        String(decoding: stringStorage, as: UTF8.self)
     }
 
     public var asDouble: Double {
@@ -101,6 +106,7 @@ public final class Register: @unchecked Sendable {
         let r = Register()
         r.kind = kind
         r.storage = storage
+        r.stringStorage = stringStorage
         return r
     }
 
@@ -109,6 +115,7 @@ public final class Register: @unchecked Sendable {
     public func assign(from other: Register) {
         self.kind = other.kind
         self.storage = other.storage
+        self.stringStorage = other.stringStorage
     }
 }
 
@@ -119,8 +126,7 @@ extension Register: Hashable {
         case .int64, .double, .bool:
             hasher.combine(storage.0)
         case .char16:
-            hasher.combine(storage.0)
-            hasher.combine(storage.1)
+            hasher.combine(stringStorage)
         }
     }
 
@@ -134,7 +140,7 @@ extension Register: Hashable {
             // itself, matching IEEE-754 semantics that the operators rely on.
             return lhs.asDouble == rhs.asDouble
         case .char16:
-            return lhs.storage.0 == rhs.storage.0 && lhs.storage.1 == rhs.storage.1
+            return lhs.stringStorage == rhs.stringStorage
         }
     }
 }
@@ -153,16 +159,18 @@ extension Register: Comparable {
             // false < true.
             return !lhs.asBool && rhs.asBool
         case .char16:
-            return withUnsafeBytes(of: lhs.storage) { l in
-                withUnsafeBytes(of: rhs.storage) { r in
-                    let lb = l.bindMemory(to: UInt8.self)
-                    let rb = r.bindMemory(to: UInt8.self)
-                    for i in 0..<16 {
-                        if lb[i] != rb[i] { return lb[i] < rb[i] }
-                    }
-                    return false
-                }
+            // Unsigned lexicographic over content bytes; the shorter content
+            // sorts first on a shared prefix (matches NUL-filled byte order,
+            // since the fill byte 0x00 is below any content byte).
+            let l = lhs.stringStorage
+            let r = rhs.stringStorage
+            let n = Swift.min(l.count, r.count)
+            var i = 0
+            while i < n {
+                if l[i] != r[i] { return l[i] < r[i] }
+                i += 1
             }
+            return l.count < r.count
         }
     }
 }

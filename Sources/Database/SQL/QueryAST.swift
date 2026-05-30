@@ -49,27 +49,65 @@ public struct QueryAST: Equatable, Sendable {
         case bool(Bool)
     }
 
+    /// Aggregate functions exposed by `GROUP BY`. `count` also serves
+    /// `COUNT(*)` (see `SelectItem.aggregate` with a nil argument).
+    public enum AggregateFunction: Equatable, Sendable {
+        case count, sum, min, max
+    }
+
+    /// One item of the SELECT list: a plain column or an aggregate call. A nil
+    /// aggregate argument denotes `COUNT(*)`.
+    public enum SelectItem: Equatable, Sendable {
+        case column(AttrRef)
+        case aggregate(function: AggregateFunction, arg: AttrRef?)
+    }
+
+    /// One `ORDER BY` term. The sort key references an output column either by
+    /// 1-based position or by name; `descending` is `DESC`.
+    public struct OrderItem: Equatable, Sendable {
+        public enum Key: Equatable, Sendable {
+            case position(Int)
+            case name(AttrRef)
+        }
+        public let key: Key
+        public let descending: Bool
+        public init(key: Key, descending: Bool) {
+            self.key = key
+            self.descending = descending
+        }
+    }
+
     public let relations: [Relation]
     /// Empty `projections` means `SELECT *` (pass-through identity).
-    public let projections: [AttrRef]
+    public let projections: [SelectItem]
     public let selections: [(AttrRef, Literal)]
     public let joins: [(AttrRef, AttrRef)]
+    /// `GROUP BY` columns (empty = no explicit grouping).
+    public let groupBy: [AttrRef]
+    /// `ORDER BY` terms (empty = unordered).
+    public let orderBy: [OrderItem]
 
     public init(
         relations: [Relation],
-        projections: [AttrRef],
+        projections: [SelectItem],
         selections: [(AttrRef, Literal)],
-        joins: [(AttrRef, AttrRef)]
+        joins: [(AttrRef, AttrRef)],
+        groupBy: [AttrRef] = [],
+        orderBy: [OrderItem] = []
     ) {
         self.relations = relations
         self.projections = projections
         self.selections = selections
         self.joins = joins
+        self.groupBy = groupBy
+        self.orderBy = orderBy
     }
 
     public static func == (lhs: QueryAST, rhs: QueryAST) -> Bool {
         guard lhs.relations == rhs.relations,
               lhs.projections == rhs.projections,
+              lhs.groupBy == rhs.groupBy,
+              lhs.orderBy == rhs.orderBy,
               lhs.selections.count == rhs.selections.count,
               lhs.joins.count == rhs.joins.count
         else { return false }

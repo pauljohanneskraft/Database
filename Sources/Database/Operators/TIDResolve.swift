@@ -50,9 +50,11 @@ public final class TIDResolve: UnaryOperator, Operator {
             case .char:
                 let length = Int(column.type.length)
                 if cursor + length > Int(bytesRead) { return false }
-                let slice = Array(readBuffer[cursor..<(cursor + length)])
-                let s = String(bytes: slice, encoding: .utf8) ?? ""
-                output[i].setString(s)
+                // Content runs up to the first NUL fill byte, or the whole field.
+                var end = cursor
+                let fieldEnd = cursor + length
+                while end < fieldEnd && readBuffer[end] != 0 { end += 1 }
+                output[i].setString(String(decoding: readBuffer[cursor..<end], as: UTF8.self))
                 cursor += length
             }
         }

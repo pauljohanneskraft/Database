@@ -10,19 +10,24 @@ import Musl
 
 /// Memory-budget-aware row sort built on the generic `externalSort`.
 ///
-/// Rows in a single sort all share the same column count, so each row
-/// serialises to a fixed stride of `registerCount * registerWireSize` bytes —
-/// one tag byte plus a 16-byte payload per register. That fixed stride lets us
-/// hand the records straight to `externalSort` without per-row length framing.
+/// Rows in a single sort all share the same column layout, so each row
+/// serialises to a fixed stride: per attribute, one kind tag byte plus a
+/// payload of the attribute's wire width — 8 for `int64`/`double`, 1 for
+/// `bool`, and the column's declared `CHAR(n)` width for `char16` (content,
+/// NUL-filled). That fixed stride lets us hand the records straight to
+/// `externalSort` without per-row length framing. The caller supplies the
+/// per-attribute payload widths (`attributeWidths`) since a variable-length
+/// char `Register` no longer carries its column width.
 ///
 /// Usage: `write` each input row (buffered, flushed to a temp file in blocks
 /// bounded by `memSize`), call `finish` to run the external sort, then stream
 /// the sorted rows back with `next`.
 final class SortSpillover {
-    /// `[ kindTag(1) | payload(16) ]` per register.
-    static let registerWireSize = 17
-
     private let registerCount: Int
+    /// Payload bytes per attribute (excludes the 1-byte tag).
+    private let widths: [Int]
+    /// Byte offset of each attribute's tag within a serialised row.
+    private let offsets: [Int]
     private let rowStride: Int
     private let memSize: Int
     private let compare: (UnsafeRawPointer, UnsafeRawPointer) -> Bool
@@ -41,32 +46,47 @@ final class SortSpillover {
     private var rowScratch: [UInt8]
     private(set) var current: [Register] = []
 
+    /// Tag(1) + payload offsets/stride for the given per-attribute payload
+    /// widths.
+    static func layout(_ attributeWidths: [Int]) -> (offsets: [Int], stride: Int) {
+        var offsets: [Int] = []
+        offsets.reserveCapacity(attributeWidths.count)
+        var cursor = 0
+        for w in attributeWidths {
+            offsets.append(cursor)
+            cursor += 1 + w
+        }
+        return (offsets, cursor)
+    }
+
     private init(
-        registerCount: Int,
+        attributeWidths: [Int],
         memSize: Int,
         compare: @escaping (UnsafeRawPointer, UnsafeRawPointer) -> Bool,
         input: PosixFile
     ) {
-        let wire = SortSpillover.registerWireSize
-        self.registerCount = registerCount
-        self.rowStride = registerCount * wire
+        let (offsets, stride) = SortSpillover.layout(attributeWidths)
+        self.registerCount = attributeWidths.count
+        self.widths = attributeWidths
+        self.offsets = offsets
+        self.rowStride = stride
         // The external sort needs room for at least two records.
-        self.memSize = max(memSize, 2 * registerCount * wire)
+        self.memSize = max(memSize, 2 * stride)
         self.compare = compare
         self.input = input
-        self.rowScratch = [UInt8](repeating: 0, count: registerCount * wire)
+        self.rowScratch = [UInt8](repeating: 0, count: stride)
         // Flush in blocks no larger than the sort budget, but always at least
         // one row.
-        self.flushThreshold = max(registerCount * wire, max(memSize, 2 * registerCount * wire))
+        self.flushThreshold = max(stride, max(memSize, 2 * stride))
     }
 
     static func create(
-        registerCount: Int,
+        attributeWidths: [Int],
         memSize: Int,
         compare: @escaping (UnsafeRawPointer, UnsafeRawPointer) -> Bool
     ) throws -> SortSpillover {
         let file = try PosixFile.makeTemporary()
-        return SortSpillover(registerCount: registerCount, memSize: memSize, compare: compare, input: file)
+        return SortSpillover(attributeWidths: attributeWidths, memSize: memSize, compare: compare, input: file)
     }
 
     func write(_ row: [Register]) throws {
@@ -123,7 +143,7 @@ final class SortSpillover {
         }
         readOffset += rowStride
         current = rowScratch.withUnsafeBytes { raw in
-            deserialiseRow(raw.baseAddress!, count: registerCount)
+            deserialiseRow(raw.baseAddress!)
         }
         return true
     }
@@ -136,75 +156,85 @@ final class SortSpillover {
         rowCount = 0
         inputBytes = 0
     }
-}
 
-// MARK: - Row encoding
+    // MARK: - Row encoding
 
-private func serialiseRow(_ row: [Register], into base: UnsafeMutableRawPointer) {
-    let wire = SortSpillover.registerWireSize
-    for (i, reg) in row.enumerated() {
-        let offset = i * wire
-        base.storeBytes(of: reg.kind.rawValue, toByteOffset: offset, as: UInt8.self)
-        let payload = base.advanced(by: offset + 1)
-        switch reg.kind {
-        case .int64:
-            var v = reg.asInt
-            withUnsafeBytes(of: &v) { payload.copyMemory(from: $0.baseAddress!, byteCount: 8) }
-        case .char16:
-            let utf8 = Array(reg.asString.utf8)
-            payload.initializeMemory(as: UInt8.self, repeating: 0, count: 16)
-            for j in 0..<min(16, utf8.count) {
-                payload.storeBytes(of: utf8[j], toByteOffset: j, as: UInt8.self)
+    private func serialiseRow(_ row: [Register], into base: UnsafeMutableRawPointer) {
+        for (i, reg) in row.enumerated() {
+            let offset = offsets[i]
+            let width = widths[i]
+            base.storeBytes(of: reg.kind.rawValue, toByteOffset: offset, as: UInt8.self)
+            let payload = base.advanced(by: offset + 1)
+            switch reg.kind {
+            case .int64:
+                var v = reg.asInt
+                withUnsafeBytes(of: &v) { payload.copyMemory(from: $0.baseAddress!, byteCount: 8) }
+            case .char16:
+                // Content, NUL-filled to the attribute width (truncated if it
+                // somehow overflows — content never exceeds the declared width).
+                let utf8 = Array(reg.asString.utf8)
+                payload.initializeMemory(as: UInt8.self, repeating: 0, count: width)
+                for j in 0..<min(width, utf8.count) {
+                    payload.storeBytes(of: utf8[j], toByteOffset: j, as: UInt8.self)
+                }
+            case .double:
+                var v = reg.asDouble
+                withUnsafeBytes(of: &v) { payload.copyMemory(from: $0.baseAddress!, byteCount: 8) }
+            case .bool:
+                var v: UInt8 = reg.asBool ? 1 : 0
+                payload.copyMemory(from: &v, byteCount: 1)
             }
-        case .double:
-            var v = reg.asDouble
-            withUnsafeBytes(of: &v) { payload.copyMemory(from: $0.baseAddress!, byteCount: 8) }
-        case .bool:
-            var v: UInt8 = reg.asBool ? 1 : 0
-            payload.copyMemory(from: &v, byteCount: 1)
         }
     }
-}
 
-private func deserialiseRow(_ base: UnsafeRawPointer, count: Int) -> [Register] {
-    let wire = SortSpillover.registerWireSize
-    var row: [Register] = []
-    row.reserveCapacity(count)
-    for i in 0..<count {
-        let offset = i * wire
-        let tag = base.load(fromByteOffset: offset, as: UInt8.self)
-        let payload = base.advanced(by: offset + 1)
-        let reg = Register()
-        switch Register.Kind(rawValue: tag) {
-        case .int64:
-            reg.setInt(payload.loadUnaligned(as: Int64.self))
-        case .double:
-            reg.setDouble(payload.loadUnaligned(as: Double.self))
-        case .bool:
-            reg.setBool(payload.load(as: UInt8.self) != 0)
-        case .char16, .none:
-            let buf = UnsafeBufferPointer<UInt8>(
-                start: payload.assumingMemoryBound(to: UInt8.self),
-                count: 16
-            )
-            reg.setString(String(decoding: buf, as: UTF8.self))
+    private func deserialiseRow(_ base: UnsafeRawPointer) -> [Register] {
+        var row: [Register] = []
+        row.reserveCapacity(registerCount)
+        for i in 0..<registerCount {
+            let offset = offsets[i]
+            let width = widths[i]
+            let tag = base.load(fromByteOffset: offset, as: UInt8.self)
+            let payload = base.advanced(by: offset + 1)
+            let reg = Register()
+            switch Register.Kind(rawValue: tag) {
+            case .int64:
+                reg.setInt(payload.loadUnaligned(as: Int64.self))
+            case .double:
+                reg.setDouble(payload.loadUnaligned(as: Double.self))
+            case .bool:
+                reg.setBool(payload.load(as: UInt8.self) != 0)
+            case .char16, .none:
+                // Content runs up to the first NUL fill byte within the field.
+                var end = 0
+                while end < width && payload.load(fromByteOffset: end, as: UInt8.self) != 0 { end += 1 }
+                let buf = UnsafeBufferPointer<UInt8>(
+                    start: payload.assumingMemoryBound(to: UInt8.self),
+                    count: end
+                )
+                reg.setString(String(decoding: buf, as: UTF8.self))
+            }
+            row.append(reg)
         }
-        row.append(reg)
+        return row
     }
-    return row
 }
 
 // MARK: - Raw-row comparator
 
 /// Builds a `<` predicate over two serialised rows for `externalSort`. Reads
 /// only the register fields named by `criteria`; matches `Register`'s own
-/// `Comparable` ordering per kind.
-func makeRowComparator(criteria: [Sort.Criterion]) -> (UnsafeRawPointer, UnsafeRawPointer) -> Bool {
-    let wire = SortSpillover.registerWireSize
+/// `Comparable` ordering per kind. `attributeWidths` is the same per-attribute
+/// payload-width array the `SortSpillover` was created with.
+func makeRowComparator(
+    criteria: [Sort.Criterion],
+    attributeWidths: [Int]
+) -> (UnsafeRawPointer, UnsafeRawPointer) -> Bool {
+    let (offsets, _) = SortSpillover.layout(attributeWidths)
     return { a, b in
         for criterion in criteria {
-            let off = criterion.attrIndex * wire
-            let order = compareRegisterBytes(a.advanced(by: off), b.advanced(by: off))
+            let off = offsets[criterion.attrIndex]
+            let width = attributeWidths[criterion.attrIndex]
+            let order = compareRegisterBytes(a.advanced(by: off), b.advanced(by: off), width: width)
             if order == 0 { continue }
             let less = order < 0
             return criterion.descending ? !less : less
@@ -213,11 +243,11 @@ func makeRowComparator(criteria: [Sort.Criterion]) -> (UnsafeRawPointer, UnsafeR
     }
 }
 
-/// Three-way compare of two serialised registers (tag byte + 16-byte payload).
-/// Returns negative / zero / positive. Both sides are the same kind (schema
-/// guarantees it), so the tag is read from `a` only.
+/// Three-way compare of two serialised registers (tag byte + payload). Returns
+/// negative / zero / positive. Both sides are the same kind (schema guarantees
+/// it), so the tag is read from `a` only. `width` is the char payload width.
 @inline(__always)
-private func compareRegisterBytes(_ a: UnsafeRawPointer, _ b: UnsafeRawPointer) -> Int {
+private func compareRegisterBytes(_ a: UnsafeRawPointer, _ b: UnsafeRawPointer, width: Int) -> Int {
     let tag = a.load(as: UInt8.self)
     let pa = a.advanced(by: 1)
     let pb = b.advanced(by: 1)
@@ -235,7 +265,9 @@ private func compareRegisterBytes(_ a: UnsafeRawPointer, _ b: UnsafeRawPointer) 
         let y = pb.load(as: UInt8.self)
         return Int(x) - Int(y)
     case .char16, .none:
-        for i in 0..<16 {
+        // NUL-filled bytes compare consistently with `Register`'s content
+        // ordering, since the fill byte 0x00 is below any content byte.
+        for i in 0..<width {
             let x = pa.load(fromByteOffset: i, as: UInt8.self)
             let y = pb.load(fromByteOffset: i, as: UInt8.self)
             if x != y { return x < y ? -1 : 1 }

@@ -176,11 +176,10 @@ public struct Planner {
                 attrIndex: slot, constant: v, predicateType: .eq
             ))
         case (.string(let v), .char):
-            // Pad/truncate to the column's declared width so the comparison
-            // hits the same bytes TableScan emits.
-            let padded = Self.padString(v, to: Int(attr.type.length))
+            // Char values flow as content bytes (no padding), so the constant
+            // is the raw literal — it compares equal to the column's content.
             return Select(input: input, predicate: Select.PredicateAttributeChar16(
-                attrIndex: slot, constant: padded, predicateType: .eq
+                attrIndex: slot, constant: v, predicateType: .eq
             ))
         case (.double(let v), _):
             return Select(input: input, predicate: Select.PredicateAttributeDouble(
@@ -198,10 +197,6 @@ public struct Planner {
         }
     }
 
-    private static func padString(_ s: String, to length: Int) -> String {
-        if s.count >= length { return String(s.prefix(length)) }
-        return s + String(repeating: " ", count: length - s.count)
-    }
 }
 
 /// Compact hashable key for `(scanIndex, columnIndex)` so we don't need an

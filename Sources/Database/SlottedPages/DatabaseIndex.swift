@@ -1,13 +1,14 @@
 /// Index support for `Database`: a `BTree`-backed secondary index per
-/// `SchemaIndex`. Keys are either `Int64` (integer columns) or `Char16` (char
-/// columns); values are `TID.rawValue`s. Indexes are unique — inserting a
-/// duplicate key throws `DatabaseError.duplicateKey`.
+/// `SchemaIndex`. The tree is byte-keyed (`BTree<UInt64>`, value = `TID.rawValue`);
+/// integer columns use an 8-byte numeric key, char columns a fixed key of the
+/// column's declared width (content NUL-filled, lexicographic). Indexes are
+/// unique — inserting a duplicate key throws `DatabaseError.duplicateKey`.
 
 /// Type-erased handle over the two supported `BTree` key flavours. Encodes a
 /// column's string value into the proper key before delegating.
 public enum AnyIndex {
-    case int64(BTree<Int64, UInt64>)
-    case char16(BTree<Char16, UInt64>, length: Int)
+    case int64(BTree<UInt64>)
+    case char(BTree<UInt64>, width: Int)
 
     /// The integer encoding must match `Database.insert` / `TableScan`, which
     /// store integers as 4-byte `Int32` widened to `Int64`.
@@ -19,8 +20,8 @@ public enum AnyIndex {
         switch self {
         case .int64(let tree):
             return try tree.lookup(Self.int64Key(s)) != nil
-        case .char16(let tree, let length):
-            return try tree.lookup(Char16.padded(s, toLength: length)) != nil
+        case .char(let tree, let width):
+            return try tree.lookup(charKey: s, width: width) != nil
         }
     }
 
@@ -28,8 +29,8 @@ public enum AnyIndex {
         switch self {
         case .int64(let tree):
             return try tree.lookup(Self.int64Key(s))
-        case .char16(let tree, let length):
-            return try tree.lookup(Char16.padded(s, toLength: length))
+        case .char(let tree, let width):
+            return try tree.lookup(charKey: s, width: width)
         }
     }
 
@@ -37,8 +38,8 @@ public enum AnyIndex {
         switch self {
         case .int64(let tree):
             try tree.insert(Self.int64Key(s), tid)
-        case .char16(let tree, let length):
-            try tree.insert(Char16.padded(s, toLength: length), tid)
+        case .char(let tree, let width):
+            try tree.insert(charKey: s, width: width, tid)
         }
     }
 
@@ -46,7 +47,7 @@ public enum AnyIndex {
     var header: (root: UInt64, rootLevel: UInt64, maxPageId: UInt64) {
         switch self {
         case .int64(let tree): return (tree.root, tree.rootLevel, tree.maxPageId)
-        case .char16(let tree, _): return (tree.root, tree.rootLevel, tree.maxPageId)
+        case .char(let tree, _): return (tree.root, tree.rootLevel, tree.maxPageId)
         }
     }
 
@@ -59,10 +60,11 @@ public enum AnyIndex {
         switch self {
         case .int64(let tree):
             guard case .int(let v) = literal else { return nil }
-            return IndexScan(tree: tree, key: Self.int64Key(String(v)), decode: decode)
-        case .char16(let tree, let length):
+            let key = Self.int64Key(String(v))
+            return IndexScan { try tree.lookup(key).map(decode) }
+        case .char(let tree, let width):
             guard case .string(let s) = literal else { return nil }
-            return IndexScan(tree: tree, key: Char16.padded(s, toLength: length), decode: decode)
+            return IndexScan { try tree.lookup(charKey: s, width: width).map(decode) }
         }
     }
 }
@@ -85,17 +87,18 @@ extension Database {
         for idx in schema.indexes {
             switch idx.keyKind {
             case .int64:
-                let tree = BTree<Int64, UInt64>(segmentId: idx.segmentId, bufferManager: bufferManager)
+                let tree = BTree<UInt64>.int64Keyed(segmentId: idx.segmentId, bufferManager: bufferManager)
                 tree.root = idx.root
                 tree.rootLevel = idx.rootLevel
                 tree.maxPageId = idx.maxPageId
                 indexes[idx.segmentId] = .int64(tree)
             case .char16:
-                let tree = BTree<Char16, UInt64>(segmentId: idx.segmentId, bufferManager: bufferManager)
+                let width = Int(idx.charLength)
+                let tree = BTree<UInt64>.charKeyed(segmentId: idx.segmentId, bufferManager: bufferManager, width: width)
                 tree.root = idx.root
                 tree.rootLevel = idx.rootLevel
                 tree.maxPageId = idx.maxPageId
-                indexes[idx.segmentId] = .char16(tree, length: Int(idx.charLength))
+                indexes[idx.segmentId] = .char(tree, width: width)
             }
         }
     }
@@ -154,11 +157,12 @@ extension Database {
         let live: AnyIndex
         switch keyKind {
         case .int64:
-            live = .int64(BTree<Int64, UInt64>(segmentId: segmentId, bufferManager: bufferManager))
+            live = .int64(BTree<UInt64>.int64Keyed(segmentId: segmentId, bufferManager: bufferManager))
         case .char16:
-            live = .char16(
-                BTree<Char16, UInt64>(segmentId: segmentId, bufferManager: bufferManager),
-                length: Int(column.type.length)
+            let width = Int(column.type.length)
+            live = .char(
+                BTree<UInt64>.charKeyed(segmentId: segmentId, bufferManager: bufferManager, width: width),
+                width: width
             )
         }
         indexes[segmentId] = live

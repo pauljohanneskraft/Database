@@ -8,58 +8,62 @@ import Musl
 #error("Unsupported platform: BTree requires a POSIX libc for memmove/memcpy")
 #endif
 
-/// In-memory B+-Tree on top of `BufferManager`. Generic over `Key` and
-/// `Value`; the page size is a runtime constructor argument (Swift lacks
-/// value generics), so capacities are computed once at init from `pageSize`
-/// and the strides of `Key`/`Value`. Ordering uses `<` from `Comparable`.
+/// In-memory B+-Tree on top of `BufferManager`.
+///
+/// The key is a **runtime-width raw byte string** (`keyStride` bytes) ordered by
+/// a `less` comparator supplied at construction — the same shape `ExternalSort`
+/// uses (runtime stride + closure) rather than a compile-time generic key type.
+/// That lets an index key be exactly its column's declared `CHAR(n)` width (or 8
+/// bytes for an integer key) instead of a fixed cap, while the node layout stays
+/// fixed-stride. `Value` stays a `BitwiseCopyable` generic (always `UInt64` here:
+/// a `TID.rawValue`). Typed conveniences for `UInt64` / `Int64` / char keys are
+/// at the bottom of the file.
 ///
 /// Concurrency: per-page latches in `BufferFrame` (acquired through
 /// `fixPage`/`unfixPage`), a root-level `RWLock` for the `root`/`rootLevel`
 /// fields, and a two-phase optimistic `insert` that retries with the root
 /// locked exclusively if a split would propagate to the root.
-public final class BTree<Key, Value>: Segment, @unchecked Sendable
-where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
+public final class BTree<Value>: Segment, @unchecked Sendable
+where Value: BitwiseCopyable {
+
+    /// Bytes per key (fixed for the life of the tree). Page-id child pointers
+    /// are always 8 bytes; keys/values are accessed unaligned, so the on-page
+    /// layout needs no alignment padding.
+    public let keyStride: Int
+    public let valueStride: Int
+    /// Strict `<` over two `keyStride`-byte key regions.
+    private let less: (UnsafeRawPointer, UnsafeRawPointer) -> Bool
 
     // MARK: - Layout
 
-    /// Capacity of an `InnerNode` at the given page size:
-    /// `(pageSize - sizeof(Node) + sizeof(Key)) / (sizeof(Key) + sizeof(UInt64))`.
-    public static func innerCapacity(pageSize: Int) -> Int {
-        let keyStride = MemoryLayout<Key>.stride
-        return (pageSize - 4 + keyStride) / (keyStride + 8)
+    /// Capacity of an `InnerNode`: `(pageSize - 4 + keyStride) / (keyStride + 8)`
+    /// (4-byte header; `(cap - 1)` keys; `cap` 8-byte child page ids).
+    public static func innerCapacity(pageSize: Int, keyStride: Int) -> Int {
+        (pageSize - 4 + keyStride) / (keyStride + 8)
     }
 
-    /// Capacity of a `LeafNode` at the given page size:
-    /// `(pageSize - sizeof(Node)) / (sizeof(Key) + sizeof(Value))`.
-    public static func leafCapacity(pageSize: Int) -> Int {
-        let keyStride = MemoryLayout<Key>.stride
-        let valueStride = MemoryLayout<Value>.stride
-        return (pageSize - 4) / (keyStride + valueStride)
+    /// Capacity of a `LeafNode`: `(pageSize - 4) / (keyStride + valueStride)`.
+    public static func leafCapacity(pageSize: Int, keyStride: Int, valueStride: Int) -> Int {
+        (pageSize - 4) / (keyStride + valueStride)
     }
 
-    /// Byte size occupied by an `InnerNode` at the given page size. Includes
-    /// header padding derived from `Key` alignment so the layout is stable
-    /// across builds.
-    public static func innerNodeSize(pageSize: Int) -> Int {
-        let keyAlign = MemoryLayout<Key>.alignment
-        let keysOffset = ((4 + keyAlign - 1) / keyAlign) * keyAlign
-        let cap = innerCapacity(pageSize: pageSize)
-        let endOfKeys = keysOffset + (cap - 1) * MemoryLayout<Key>.stride
-        let childrenOffset = ((endOfKeys + 7) / 8) * 8 // children are UInt64 → 8-byte align
-        return childrenOffset + cap * 8
+    /// Byte size occupied by an `InnerNode`.
+    public static func innerNodeSize(pageSize: Int, keyStride: Int) -> Int {
+        let cap = innerCapacity(pageSize: pageSize, keyStride: keyStride)
+        return 4 + (cap - 1) * keyStride + cap * 8
     }
 
-    /// Byte size occupied by a `LeafNode` at the given page size.
-    public static func leafNodeSize(pageSize: Int) -> Int {
-        let keyAlign = MemoryLayout<Key>.alignment
-        let valueAlign = MemoryLayout<Value>.alignment
-        let keyStride = MemoryLayout<Key>.stride
-        let valueStride = MemoryLayout<Value>.stride
-        let keysOffset = ((4 + keyAlign - 1) / keyAlign) * keyAlign
-        let cap = leafCapacity(pageSize: pageSize)
-        let endOfKeys = keysOffset + cap * keyStride
-        let valuesOffset = ((endOfKeys + valueAlign - 1) / valueAlign) * valueAlign
-        return valuesOffset + cap * valueStride
+    /// Byte size occupied by a `LeafNode`.
+    public static func leafNodeSize(pageSize: Int, keyStride: Int, valueStride: Int) -> Int {
+        let cap = leafCapacity(pageSize: pageSize, keyStride: keyStride, valueStride: valueStride)
+        return 4 + cap * (keyStride + valueStride)
+    }
+
+    func innerCapacity(pageSize: Int) -> Int {
+        BTree.innerCapacity(pageSize: pageSize, keyStride: keyStride)
+    }
+    func leafCapacity(pageSize: Int) -> Int {
+        BTree.leafCapacity(pageSize: pageSize, keyStride: keyStride, valueStride: valueStride)
     }
 
     // MARK: - Node views
@@ -93,16 +97,21 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
         let keysOffset: Int
         let childrenOffset: Int
         let keyStride: Int
+        let less: (UnsafeRawPointer, UnsafeRawPointer) -> Bool
 
-        public init(pointer: UnsafeMutableRawPointer, pageSize: Int) {
+        public init(
+            pointer: UnsafeMutableRawPointer,
+            pageSize: Int,
+            keyStride: Int,
+            less: @escaping (UnsafeRawPointer, UnsafeRawPointer) -> Bool
+        ) {
             self.pointer = pointer
             self.pageSize = pageSize
-            self.capacity = BTree.innerCapacity(pageSize: pageSize)
-            self.keyStride = MemoryLayout<Key>.stride
-            let keyAlign = MemoryLayout<Key>.alignment
-            self.keysOffset = ((4 + keyAlign - 1) / keyAlign) * keyAlign
-            let endOfKeys = self.keysOffset + (self.capacity - 1) * self.keyStride
-            self.childrenOffset = ((endOfKeys + 7) / 8) * 8
+            self.keyStride = keyStride
+            self.less = less
+            self.capacity = BTree.innerCapacity(pageSize: pageSize, keyStride: keyStride)
+            self.keysOffset = 4
+            self.childrenOffset = 4 + (self.capacity - 1) * keyStride
         }
 
         public var level: UInt16 {
@@ -117,12 +126,13 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
 
         public var isLeaf: Bool { level == 0 }
 
-        public func key(at index: Int) -> Key {
-            pointer.loadUnaligned(fromByteOffset: keysOffset + index * keyStride, as: Key.self)
+        /// Pointer to the `index`-th separator key (read-only use).
+        func keyPointer(at index: Int) -> UnsafeMutableRawPointer {
+            pointer.advanced(by: keysOffset + index * keyStride)
         }
 
-        func setKey(_ key: Key, at index: Int) {
-            pointer.storeBytes(of: key, toByteOffset: keysOffset + index * keyStride, as: Key.self)
+        func setKey(from src: UnsafeRawPointer, at index: Int) {
+            memcpy(keyPointer(at: index), src, keyStride)
         }
 
         public func child(at index: Int) -> UInt64 {
@@ -136,19 +146,19 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
         /// Index of the first key not less than `key`; `exists` true on
         /// exact match. Returns `(count - 1, false)` if all separator keys
         /// are < `key`, which is the "rightmost child" fall-through.
-        public func lowerBound(_ key: Key) -> (index: Int, exists: Bool) {
+        public func lowerBound(_ key: UnsafeRawPointer) -> (index: Int, exists: Bool) {
             let n = Int(count)
             for index in 0..<(n - 1) {
-                let k = self.key(at: index)
-                if k < key { continue }
-                return (index, !(key < k))
+                let k = keyPointer(at: index)
+                if less(k, key) { continue }
+                return (index, !less(key, k))
             }
             return (n - 1, false)
         }
 
         /// Insert a separator key + right-child page id. `precondition`-fails
         /// if the key already exists.
-        public func insertSplit(key: Key, splitPage: UInt64) {
+        public func insertSplit(key: UnsafeRawPointer, splitPage: UInt64) {
             let (index, exists) = lowerBound(key)
             precondition(!exists, "Cannot insert split. Key already exists.")
             let n = Int(count)
@@ -161,17 +171,17 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
                 let childDst = pointer.advanced(by: childrenOffset + (index + 2) * 8)
                 memmove(childDst, childSrc, length * 8)
             }
-            setKey(key, at: index)
+            setKey(from: key, at: index)
             setChild(splitPage, at: index + 1)
             count = UInt16(n + 1)
         }
 
         /// Split this node into `other`: `other.count = (count + 1) / 2`,
         /// then shrink `count` by that amount, copy keys/children to `other`,
-        /// and return the demoted separator (`keys[count - 1]` after the
-        /// shrink). Caller must set `other.level = self.level` afterwards.
-        public func split(into other: UnsafeMutableRawPointer) -> Key {
-            let newNode = InnerNode(pointer: other, pageSize: pageSize)
+        /// and copy the demoted separator (`keys[count - 1]` after the shrink)
+        /// into `separatorOut` (`keyStride` bytes). Caller sets `other.level`.
+        public func split(into other: UnsafeMutableRawPointer, separatorOut: UnsafeMutableRawPointer) {
+            let newNode = InnerNode(pointer: other, pageSize: pageSize, keyStride: keyStride, less: less)
             let oldCount = Int(count)
             let newCount = (oldCount + 1) / 2
             newNode.count = UInt16(newCount)
@@ -183,11 +193,7 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
             let childSrc = pointer.advanced(by: childrenOffset + leftCount * 8)
             let childDst = other.advanced(by: childrenOffset)
             memcpy(childDst, childSrc, newCount * 8)
-            return key(at: leftCount - 1)
-        }
-
-        public func keysVector() -> [Key] {
-            (0..<(Int(count) - 1)).map { key(at: $0) }
+            memcpy(separatorOut, keyPointer(at: leftCount - 1), keyStride)
         }
     }
 
@@ -201,18 +207,23 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
         let valuesOffset: Int
         let keyStride: Int
         let valueStride: Int
+        let less: (UnsafeRawPointer, UnsafeRawPointer) -> Bool
 
-        public init(pointer: UnsafeMutableRawPointer, pageSize: Int) {
+        public init(
+            pointer: UnsafeMutableRawPointer,
+            pageSize: Int,
+            keyStride: Int,
+            valueStride: Int,
+            less: @escaping (UnsafeRawPointer, UnsafeRawPointer) -> Bool
+        ) {
             self.pointer = pointer
             self.pageSize = pageSize
-            self.capacity = BTree.leafCapacity(pageSize: pageSize)
-            self.keyStride = MemoryLayout<Key>.stride
-            self.valueStride = MemoryLayout<Value>.stride
-            let keyAlign = MemoryLayout<Key>.alignment
-            let valueAlign = MemoryLayout<Value>.alignment
-            self.keysOffset = ((4 + keyAlign - 1) / keyAlign) * keyAlign
-            let endOfKeys = self.keysOffset + self.capacity * self.keyStride
-            self.valuesOffset = ((endOfKeys + valueAlign - 1) / valueAlign) * valueAlign
+            self.keyStride = keyStride
+            self.valueStride = valueStride
+            self.less = less
+            self.capacity = BTree.leafCapacity(pageSize: pageSize, keyStride: keyStride, valueStride: valueStride)
+            self.keysOffset = 4
+            self.valuesOffset = 4 + self.capacity * keyStride
         }
 
         public var level: UInt16 {
@@ -227,12 +238,12 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
 
         public var isLeaf: Bool { level == 0 }
 
-        public func key(at index: Int) -> Key {
-            pointer.loadUnaligned(fromByteOffset: keysOffset + index * keyStride, as: Key.self)
+        func keyPointer(at index: Int) -> UnsafeMutableRawPointer {
+            pointer.advanced(by: keysOffset + index * keyStride)
         }
 
-        func setKey(_ key: Key, at index: Int) {
-            pointer.storeBytes(of: key, toByteOffset: keysOffset + index * keyStride, as: Key.self)
+        func setKey(from src: UnsafeRawPointer, at index: Int) {
+            memcpy(keyPointer(at: index), src, keyStride)
         }
 
         public func value(at index: Int) -> Value {
@@ -243,12 +254,12 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
             pointer.storeBytes(of: value, toByteOffset: valuesOffset + index * valueStride, as: Value.self)
         }
 
-        public func lowerBound(_ key: Key) -> (index: Int, exists: Bool) {
+        public func lowerBound(_ key: UnsafeRawPointer) -> (index: Int, exists: Bool) {
             let n = Int(count)
             for index in 0..<n {
-                let k = self.key(at: index)
-                if k < key { continue }
-                return (index, !(key < k))
+                let k = keyPointer(at: index)
+                if less(k, key) { continue }
+                return (index, !less(key, k))
             }
             return (n, false)
         }
@@ -256,7 +267,7 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
         /// Insert (or update) a key/value pair. If `key` is already present
         /// the value is overwritten in place; otherwise the entry is shifted
         /// in. `precondition`-fails on overflow.
-        public func insert(_ key: Key, _ value: Value) {
+        public func insert(_ key: UnsafeRawPointer, _ value: Value) {
             let (index, exists) = lowerBound(key)
             if exists {
                 setValue(value, at: index)
@@ -273,16 +284,13 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
                 let valDst = pointer.advanced(by: valuesOffset + (index + 1) * valueStride)
                 memmove(valDst, valSrc, length * valueStride)
             }
-            setKey(key, at: index)
+            setKey(from: key, at: index)
             setValue(value, at: index)
             count = UInt16(n + 1)
         }
 
-        /// Erase a key. No-op if not present. The `memmove` length is one
-        /// slot longer than strictly needed — it copies one extra slot of
-        /// garbage past the new tail, which is harmless because the live
-        /// range is `count - 1`.
-        public func erase(_ key: Key) {
+        /// Erase a key. No-op if not present.
+        public func erase(_ key: UnsafeRawPointer) {
             let (index, exists) = lowerBound(key)
             if !exists { return }
             let n = Int(count)
@@ -300,11 +308,13 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
 
         /// Split this leaf into `other`: the right half's
         /// `count = self.count / 2`, the left keeps the rest, and the
-        /// separator returned is `keys[count - 1]` of the shrunken left
-        /// node. The separator key stays in the left leaf — standard
-        /// B+-Tree leaf-split behaviour.
-        public func split(into other: UnsafeMutableRawPointer) -> Key {
-            let newLeaf = LeafNode(pointer: other, pageSize: pageSize)
+        /// separator (`keys[count - 1]` of the shrunken left node) is copied
+        /// into `separatorOut`. The separator key stays in the left leaf.
+        public func split(into other: UnsafeMutableRawPointer, separatorOut: UnsafeMutableRawPointer) {
+            let newLeaf = LeafNode(
+                pointer: other, pageSize: pageSize,
+                keyStride: keyStride, valueStride: valueStride, less: less
+            )
             let oldCount = Int(count)
             let newCount = oldCount / 2
             newLeaf.count = UInt16(newCount)
@@ -316,16 +326,19 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
             let valSrc = pointer.advanced(by: valuesOffset + leftCount * valueStride)
             let valDst = other.advanced(by: valuesOffset)
             memcpy(valDst, valSrc, newCount * valueStride)
-            return key(at: leftCount - 1)
+            memcpy(separatorOut, keyPointer(at: leftCount - 1), keyStride)
         }
+    }
 
-        public func keysVector() -> [Key] {
-            (0..<Int(count)).map { key(at: $0) }
-        }
+    // MARK: - Node-view factories (apply this tree's geometry + comparator)
 
-        public func valuesVector() -> [Value] {
-            (0..<Int(count)).map { value(at: $0) }
-        }
+    func leaf(_ pointer: UnsafeMutableRawPointer) -> LeafNode {
+        LeafNode(pointer: pointer, pageSize: bufferManager.pageSize,
+                 keyStride: keyStride, valueStride: valueStride, less: less)
+    }
+
+    func inner(_ pointer: UnsafeMutableRawPointer) -> InnerNode {
+        InnerNode(pointer: pointer, pageSize: bufferManager.pageSize, keyStride: keyStride, less: less)
     }
 
     // MARK: - State
@@ -336,9 +349,6 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
     private let rootMutex = RWLock()
     private let pageAllocMutex = Mutex()
 
-    /// Atomically reserve the next page id. The only mutation point for
-    /// `maxPageId`; safe to call from concurrent optimistic inserts where the
-    /// root latch is held only shared (or already released).
     private func allocatePageId() -> UInt64 {
         pageAllocMutex.lock()
         defer { pageAllocMutex.unlock() }
@@ -348,18 +358,25 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
 
     // MARK: - Init
 
-    public override init(segmentId: UInt16, bufferManager: BufferManager) {
+    public init(
+        segmentId: UInt16,
+        bufferManager: BufferManager,
+        keyStride: Int,
+        less: @escaping (UnsafeRawPointer, UnsafeRawPointer) -> Bool
+    ) {
         let initialRoot = UInt64(segmentId) << 48
         self.root = initialRoot
         self.maxPageId = initialRoot
+        self.keyStride = keyStride
+        self.valueStride = MemoryLayout<Value>.stride
+        self.less = less
         super.init(segmentId: segmentId, bufferManager: bufferManager)
     }
 
     // MARK: - Lookup
 
-    /// Read-only descent: shared root lock, shared page latches, returns
-    /// `Value?` (nil when missing).
-    public func lookup(_ key: Key) throws -> Value? {
+    /// Read-only descent: shared root lock, shared page latches.
+    public func lookup(_ key: UnsafeRawPointer) throws -> Value? {
         rootMutex.lockShared()
         defer { rootMutex.unlock() }
         var pageId = root
@@ -367,20 +384,18 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
             let page = try PageAccess(manager: bufferManager, pageId: pageId, exclusive: false)
             let header = Node(pointer: page.data)
             if header.isLeaf {
-                let leaf = LeafNode(pointer: page.data, pageSize: bufferManager.pageSize)
-                let (index, exists) = leaf.lowerBound(key)
-                return exists ? leaf.value(at: index) : nil
+                let leafNode = leaf(page.data)
+                let (index, exists) = leafNode.lowerBound(key)
+                return exists ? leafNode.value(at: index) : nil
             }
-            let inner = InnerNode(pointer: page.data, pageSize: bufferManager.pageSize)
-            let (index, _) = inner.lowerBound(key)
-            pageId = inner.child(at: index)
-            // page is unfixed by deinit at next loop iteration (when it is
-            // overwritten) — `PageAccess` is RAII.
+            let innerNode = inner(page.data)
+            let (index, _) = innerNode.lowerBound(key)
+            pageId = innerNode.child(at: index)
         }
     }
 
     /// Erase. Descends with shared latches; no rebalancing.
-    public func erase(_ key: Key) throws {
+    public func erase(_ key: UnsafeRawPointer) throws {
         rootMutex.lockShared()
         defer { rootMutex.unlock() }
         var pageId = root
@@ -388,14 +403,14 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
             let page = try PageAccess(manager: bufferManager, pageId: pageId, exclusive: false)
             let header = Node(pointer: page.data)
             if header.isLeaf {
-                let leaf = LeafNode(pointer: page.data, pageSize: bufferManager.pageSize)
-                leaf.erase(key)
+                let leafNode = leaf(page.data)
+                leafNode.erase(key)
                 page.setDirty()
                 return
             }
-            let inner = InnerNode(pointer: page.data, pageSize: bufferManager.pageSize)
-            let (index, _) = inner.lowerBound(key)
-            pageId = inner.child(at: index)
+            let innerNode = inner(page.data)
+            let (index, _) = innerNode.lowerBound(key)
+            pageId = innerNode.child(at: index)
         }
     }
 
@@ -403,24 +418,18 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
 
     /// Public insert. Two-phase: try optimistically with a shared root lock,
     /// retry exclusively if a split would propagate to the root.
-    public func insert(_ key: Key, _ value: Value) throws {
+    public func insert(_ key: UnsafeRawPointer, _ value: Value) throws {
         if try !_insert(key: key, value: value, rootUniquelyLocked: false) {
             _ = try _insert(key: key, value: value, rootUniquelyLocked: true)
         }
     }
 
-    /// Insert worker. Returns `false` only in the optimistic-phase case where
-    /// a leaf split would propagate to the root and the root was only locked
-    /// shared — caller retries with `rootUniquelyLocked = true`.
-    private func _insert(key: Key, value: Value, rootUniquelyLocked: Bool) throws -> Bool {
+    private func _insert(key: UnsafeRawPointer, value: Value, rootUniquelyLocked: Bool) throws -> Bool {
         if rootUniquelyLocked {
             rootMutex.lockExclusive()
         } else {
             rootMutex.lockShared()
         }
-        // Tracks whether the root mutex is still held. The latch is released
-        // early once we crab past a safe ancestor; `defer` checks the flag at
-        // exit so it doesn't double-unlock.
         var rootHeld = true
         defer {
             if rootHeld { rootMutex.unlock() }
@@ -432,127 +441,129 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
         path.append(try PageAccess(manager: bufferManager, pageId: root, exclusive: true))
         var pathIndex = 0
 
-        let innerCap = BTree.innerCapacity(pageSize: pageSize)
-        let leafCap = BTree.leafCapacity(pageSize: pageSize)
+        let innerCap = innerCapacity(pageSize: pageSize)
+        let leafCap = leafCapacity(pageSize: pageSize)
 
-        while true {
-            let page = path[path.count - 1]
-            let header = Node(pointer: page.data)
+        // Scratch separators (keyStride bytes each), reused across the cascade.
+        let stride = keyStride
+        return try withUnsafeTemporaryAllocation(byteCount: stride * 2, alignment: 1) { scratch -> Bool in
+            let separatorBuf = scratch.baseAddress!
+            let cascadeBuf = scratch.baseAddress!.advanced(by: stride)
 
-            if !header.isLeaf {
-                let inner = InnerNode(pointer: page.data, pageSize: pageSize)
-                let (index, _) = inner.lowerBound(key)
-                let childPageId = inner.child(at: index)
-                path.append(try PageAccess(manager: bufferManager, pageId: childPageId, exclusive: true))
-                if Int(inner.count) < innerCap {
-                    pathIndex = path.count - 1
-                    for i in 0..<(pathIndex - 1) {
-                        path[i].unfix()
+            while true {
+                let page = path[path.count - 1]
+                let header = Node(pointer: page.data)
+
+                if !header.isLeaf {
+                    let innerNode = inner(page.data)
+                    let (index, _) = innerNode.lowerBound(key)
+                    let childPageId = innerNode.child(at: index)
+                    path.append(try PageAccess(manager: bufferManager, pageId: childPageId, exclusive: true))
+                    if Int(innerNode.count) < innerCap {
+                        pathIndex = path.count - 1
+                        for i in 0..<(pathIndex - 1) {
+                            path[i].unfix()
+                        }
+                        if pathIndex > 0 && rootHeld {
+                            rootMutex.unlock()
+                            rootHeld = false
+                        }
                     }
-                    if pathIndex > 0 && rootHeld {
-                        rootMutex.unlock()
-                        rootHeld = false
-                    }
+                    continue
                 }
-                continue
-            }
 
-            page.setDirty()
-            let leaf = LeafNode(pointer: page.data, pageSize: pageSize)
-            if Int(leaf.count) < leafCap {
-                leaf.insert(key, value)
-                return true
-            }
+                page.setDirty()
+                let leafNode = leaf(page.data)
+                if Int(leafNode.count) < leafCap {
+                    leafNode.insert(key, value)
+                    return true
+                }
 
-            // Leaf is full and the optimistic phase reached the root with no
-            // safe ancestor → bail out and let the caller retry with the
-            // root locked exclusively.
-            if !rootUniquelyLocked && pathIndex == 0 {
-                return false
-            }
+                if !rootUniquelyLocked && pathIndex == 0 {
+                    return false
+                }
 
-            // Split the leaf.
-            let newPage = try PageAccess(manager: bufferManager, pageId: allocatePageId(), exclusive: true)
-            let newPageId = newPage.id
-            newPage.setDirty()
-            let newLeaf = LeafNode(pointer: newPage.data, pageSize: pageSize)
-            let separatorKey = leaf.split(into: newPage.data)
-            if key < separatorKey {
-                leaf.insert(key, value)
-            } else {
-                newLeaf.insert(key, value)
-            }
-            page.unfix()
+                // Split the leaf.
+                let newPage = try PageAccess(manager: bufferManager, pageId: allocatePageId(), exclusive: true)
+                let newPageId = newPage.id
+                newPage.setDirty()
+                let newLeaf = leaf(newPage.data)
+                leafNode.split(into: newPage.data, separatorOut: separatorBuf)
+                if less(key, separatorBuf) {
+                    leafNode.insert(key, value)
+                } else {
+                    newLeaf.insert(key, value)
+                }
+                page.unfix()
 
-            // Special case: the leaf was the only page in the path → it is
-            // the root, and we need to grow the tree by one level.
-            if path.count == 1 {
+                // The leaf was the only page in the path → grow the tree.
+                if path.count == 1 {
+                    let newRootPage = try PageAccess(manager: bufferManager, pageId: allocatePageId(), exclusive: true)
+                    newRootPage.setDirty()
+                    let newRoot = inner(newRootPage.data)
+                    newRoot.level = 1
+                    newRoot.count = 2
+                    newRoot.setKey(from: separatorBuf, at: 0)
+                    newRoot.setChild(page.id, at: 0)
+                    newRoot.setChild(newPageId, at: 1)
+                    root = newRootPage.id
+                    rootLevel += 1
+                    return true
+                }
+
+                var pathIndexMax = path.count - 2
+                var parentPage = path[pathIndexMax]
+                parentPage.setDirty()
+                var parentNode = inner(parentPage.data)
+                let parentLevel = parentNode.level
+
+                if Int(parentNode.count) < innerCap {
+                    parentNode.insertSplit(key: separatorBuf, splitPage: newPageId)
+                    return true
+                }
+
+                // Cascade splits up. `separatorBuf` holds the current separator;
+                // `cascadeBuf` receives the demoted separator from each split.
+                var currentNewPageId = newPageId
+                while pathIndexMax > pathIndex {
+                    let newSiblingPage = try PageAccess(manager: bufferManager, pageId: allocatePageId(), exclusive: true)
+                    newSiblingPage.setDirty()
+                    let newSibling = inner(newSiblingPage.data)
+
+                    // previousSeparator = separatorBuf (the key to reinsert)
+                    parentNode.split(into: newSiblingPage.data, separatorOut: cascadeBuf)
+                    newSibling.level = parentNode.level
+
+                    if less(separatorBuf, key) {
+                        newSibling.insertSplit(key: separatorBuf, splitPage: currentNewPageId)
+                    } else {
+                        parentNode.insertSplit(key: separatorBuf, splitPage: currentNewPageId)
+                    }
+
+                    // The demoted separator becomes the next level's separator.
+                    memcpy(separatorBuf, cascadeBuf, stride)
+                    currentNewPageId = newSiblingPage.id
+                    parentPage.unfix()
+                    pathIndexMax -= 1
+                    parentPage = path[pathIndexMax]
+                    parentNode = inner(parentPage.data)
+                }
+
+                if pathIndex > 0 { return true }
+
+                // Splits propagated all the way to the root → grow the tree.
                 let newRootPage = try PageAccess(manager: bufferManager, pageId: allocatePageId(), exclusive: true)
                 newRootPage.setDirty()
-                let newRoot = InnerNode(pointer: newRootPage.data, pageSize: pageSize)
-                newRoot.level = 1
+                let newRoot = inner(newRootPage.data)
+                newRoot.level = parentLevel + 1
                 newRoot.count = 2
-                newRoot.setKey(separatorKey, at: 0)
-                newRoot.setChild(page.id, at: 0)
-                newRoot.setChild(newPageId, at: 1)
+                newRoot.setKey(from: separatorBuf, at: 0)
+                newRoot.setChild(root, at: 0)
+                newRoot.setChild(currentNewPageId, at: 1)
                 root = newRootPage.id
                 rootLevel += 1
                 return true
             }
-
-            var pathIndexMax = path.count - 2
-            var parentPage = path[pathIndexMax]
-            parentPage.setDirty()
-            var parentNode = InnerNode(pointer: parentPage.data, pageSize: pageSize)
-            let parentLevel = parentNode.level
-
-            if Int(parentNode.count) < innerCap {
-                parentNode.insertSplit(key: separatorKey, splitPage: newPageId)
-                return true
-            }
-
-            // Cascade splits up. Each iteration splits `parentNode`, hands
-            // the previous separator+child to whichever side `key` belongs
-            // on, and walks one level higher in the path.
-            var currentSeparator = separatorKey
-            var currentNewPageId = newPageId
-            while pathIndexMax > pathIndex {
-                let newSiblingPage = try PageAccess(manager: bufferManager, pageId: allocatePageId(), exclusive: true)
-                newSiblingPage.setDirty()
-                let newSibling = InnerNode(pointer: newSiblingPage.data, pageSize: pageSize)
-
-                let previousSeparator = currentSeparator
-                currentSeparator = parentNode.split(into: newSiblingPage.data)
-                newSibling.level = parentNode.level
-
-                if previousSeparator < key {
-                    newSibling.insertSplit(key: previousSeparator, splitPage: currentNewPageId)
-                } else {
-                    parentNode.insertSplit(key: previousSeparator, splitPage: currentNewPageId)
-                }
-
-                currentNewPageId = newSiblingPage.id
-                parentPage.unfix()
-                pathIndexMax -= 1
-                parentPage = path[pathIndexMax]
-                parentNode = InnerNode(pointer: parentPage.data, pageSize: pageSize)
-            }
-
-            // Reached a safe ancestor mid-cascade → done.
-            if pathIndex > 0 { return true }
-
-            // Splits propagated all the way to the root → grow the tree.
-            let newRootPage = try PageAccess(manager: bufferManager, pageId: allocatePageId(), exclusive: true)
-            newRootPage.setDirty()
-            let newRoot = InnerNode(pointer: newRootPage.data, pageSize: pageSize)
-            newRoot.level = parentLevel + 1
-            newRoot.count = 2
-            newRoot.setKey(currentSeparator, at: 0)
-            newRoot.setChild(root, at: 0)
-            newRoot.setChild(currentNewPageId, at: 1)
-            root = newRootPage.id
-            rootLevel += 1
-            return true
         }
     }
 }

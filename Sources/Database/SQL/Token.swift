@@ -13,6 +13,8 @@ public struct Span: Equatable, Sendable {
 public enum Token: Equatable, Sendable {
     // Query keywords.
     case select, from, whereKW, and, not, trueKW, falseKW
+    // Clause keywords.
+    case order, by, group, asc, desc
     // Set-operator keywords.
     case union, intersect, except, all
     // DDL / DML keywords.

@@ -1,6 +1,7 @@
 CLAUDE.md
 .claude/*.local.*
 .vscode/
+Resources/
 
 .DS_Store
 /.build

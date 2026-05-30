@@ -1,27 +1,19 @@
-/// Lookup-style index scan over a `BTree<Key, Value>`. Given a single key,
-/// emits zero rows if the key is absent or one row containing the looked-up
-/// value as the sole output register.
+/// Lookup-style index scan. Emits zero rows if the key is absent or one row
+/// containing the looked-up value as the sole output register.
 ///
-/// `Value` is converted to a `Register` via the supplied `decode` closure —
-/// callers using a `BTree<UInt64, UInt64>` typically pass
-/// `{ Register.from(int: Int64(bitPattern: $0)) }` to emit the TID raw value.
-public final class IndexScan<Key, Value>: Operator
-where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
-    public let tree: BTree<Key, Value>
-    public let key: Key
-    private let decode: (Value) -> Register
+/// The lookup is captured as a `resolve` closure (it binds the tree, the
+/// encoded key, and a decoder from the tree's value to a `Register`). This
+/// keeps `IndexScan` independent of the byte-keyed `BTree`'s generics — callers
+/// using a `BTree<UInt64>` typically resolve to `Register.from(int:)` of the
+/// TID raw value.
+public final class IndexScan: Operator {
+    private let resolve: () throws -> Register?
 
     private var emitted = false
     private var output: [Register] = []
 
-    public init(
-        tree: BTree<Key, Value>,
-        key: Key,
-        decode: @escaping (Value) -> Register
-    ) {
-        self.tree = tree
-        self.key = key
-        self.decode = decode
+    public init(resolve: @escaping () throws -> Register?) {
+        self.resolve = resolve
     }
 
     public func open() {
@@ -32,15 +24,14 @@ where Key: BitwiseCopyable & Comparable, Value: BitwiseCopyable {
     public func next() -> Bool {
         if emitted { return false }
         emitted = true
-        let value: Value?
+        let value: Register?
         do {
-            value = try tree.lookup(key)
+            value = try resolve()
         } catch {
             return false
         }
         guard let v = value else { return false }
-        let r = decode(v)
-        output[0].assign(from: r)
+        output[0].assign(from: v)
         return true
     }
 

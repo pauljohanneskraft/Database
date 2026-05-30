@@ -2,10 +2,9 @@
 /// the column types in the provided `SchemaTable`.
 ///
 /// Integers are decoded as 4-byte little-endian `Int32` (matching the encoding
-/// from `Database.insert`) and widened to `Int64` for the `Register`. Strings
-/// are decoded as the column's full width on disk, then projected into the
-/// fixed-16-byte `Register.char16` payload (truncated or padded by the
-/// register itself).
+/// from `Database.insert`) and widened to `Int64` for the `Register`. Char
+/// columns occupy their full declared width on disk; the content runs up to the
+/// first NUL fill byte and is stored as the `Register`'s variable-length string.
 ///
 /// Output register identities are stable across `open()`/`next()` cycles:
 /// each output slot is constructed once in `open()`, then mutated in place
@@ -56,10 +55,11 @@ public final class TableScan: Operator {
             case .char:
                 let length = Int(column.type.length)
                 if cursor + length > Int(bytesRead) { return false }
-                let endByte = min(cursor + length, Int(bytesRead))
-                let slice = Array(readBuffer[cursor..<endByte])
-                let s = String(bytes: slice, encoding: .utf8) ?? ""
-                output[i].setString(s)
+                // Content runs up to the first NUL fill byte, or the whole field.
+                var end = cursor
+                let fieldEnd = cursor + length
+                while end < fieldEnd && readBuffer[end] != 0 { end += 1 }
+                output[i].setString(String(decoding: readBuffer[cursor..<end], as: UTF8.self))
                 cursor += length
             }
         }
