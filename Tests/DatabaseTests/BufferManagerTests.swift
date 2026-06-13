@@ -334,7 +334,12 @@ struct BufferManagerSuite {
         try Self.withTempDir {
             let bm = BufferManager(pageSize: 1024, pageCount: 10)
             let bufferFullCount = LockedCounter()
-            let finishedCount = LockedCounter()
+            // Blocking barrier: every worker must reach this point before any of
+            // them releases its fixed pages, so the unfix order can't bias which
+            // thread proceeds first. It blocks (not busy-waits) so the dispatch
+            // pool can overcommit and schedule all 4 workers even when there are
+            // fewer cores than threads — a busy-wait deadlocks on CI runners.
+            let barrier = Barrier(count: 4)
             let group = DispatchGroup()
             for i in 0..<UInt64(4) {
                 DispatchQueue.global().async(group: group) {
@@ -349,12 +354,7 @@ struct BufferManagerSuite {
                             Issue.record("unexpected error: \(error)")
                         }
                     }
-                    finishedCount.increment()
-                    while finishedCount.value < 4 {
-                        // busy wait — every worker must reach this point
-                        // before any of them releases its fixed pages, so the
-                        // unfix order can't bias which thread proceeds first.
-                    }
+                    barrier.arriveAndWait()
                     for page in pages {
                         bm.unfixPage(page, isDirty: false)
                     }

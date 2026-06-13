@@ -26,28 +26,6 @@ private struct SeededGenerator: RandomNumberGenerator {
     }
 }
 
-/// Simple barrier — substitutes for `std::barrier` in `MultithreadWriters`.
-/// Pthread barriers aren't available on Darwin, so we hand-roll one with a
-/// mutex + condition variable.
-private final class Barrier: @unchecked Sendable {
-    private let total: Int
-    private var arrived: Int = 0
-    private let lock = NSCondition()
-
-    init(count: Int) { self.total = count }
-
-    func arriveAndWait() {
-        lock.lock()
-        arrived += 1
-        if arrived == total {
-            lock.broadcast()
-        } else {
-            while arrived < total { lock.wait() }
-        }
-        lock.unlock()
-    }
-}
-
 @Suite(.serialized)
 struct BTreeTests {
     // MARK: - Capacity
