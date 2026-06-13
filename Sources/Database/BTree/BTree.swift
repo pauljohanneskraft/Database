@@ -333,8 +333,9 @@ where Value: BitwiseCopyable {
     // MARK: - Node-view factories (apply this tree's geometry + comparator)
 
     func leaf(_ pointer: UnsafeMutableRawPointer) -> LeafNode {
-        LeafNode(pointer: pointer, pageSize: bufferManager.pageSize,
-                 keyStride: keyStride, valueStride: valueStride, less: less)
+        LeafNode(
+            pointer: pointer, pageSize: bufferManager.pageSize,
+            keyStride: keyStride, valueStride: valueStride, less: less)
     }
 
     func inner(_ pointer: UnsafeMutableRawPointer) -> InnerNode {
@@ -526,7 +527,8 @@ where Value: BitwiseCopyable {
                 // `cascadeBuf` receives the demoted separator from each split.
                 var currentNewPageId = newPageId
                 while pathIndexMax > pathIndex {
-                    let newSiblingPage = try PageAccess(manager: bufferManager, pageId: allocatePageId(), exclusive: true)
+                    let newSiblingPage = try PageAccess(
+                        manager: bufferManager, pageId: allocatePageId(), exclusive: true)
                     newSiblingPage.setDirty()
                     let newSibling = inner(newSiblingPage.data)
 

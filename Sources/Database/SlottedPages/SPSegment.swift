@@ -154,10 +154,12 @@ public final class SPSegment: Segment {
         let firstSlot = firstPage.slot(at: tid.slot)
         let firstSlotSize: UInt32 = firstSlot.isRedirect ? 0 : firstSlot.size
 
-        if !firstSlot.isRedirect &&
-            (newLength <= firstSlotSize || (newLength - firstSlotSize) <= firstPage.getFreeSpace()) {
+        if !firstSlot.isRedirect
+            && (newLength <= firstSlotSize || (newLength - firstSlotSize) <= firstPage.getFreeSpace())
+        {
             firstPage.relocate(slotId: tid.slot, dataSize: newLength, pageSize: pageSize)
-            try fsi.update(targetPage: BufferManager.segmentPageId(of: firstPageId), freeSpace: firstPage.getFreeSpace())
+            try fsi.update(
+                targetPage: BufferManager.segmentPageId(of: firstPageId), freeSpace: firstPage.getFreeSpace())
             bufferManager.unfixPage(firstFrame, isDirty: true)
             return
         }
@@ -172,7 +174,8 @@ public final class SPSegment: Segment {
             if newLength <= secondSlot.size || (newLength - secondSlot.size) <= secondPage.getFreeSpace() {
                 secondPage.relocate(slotId: redirectTID.slot, dataSize: newLength, pageSize: pageSize)
                 bufferManager.unfixPage(firstFrame, isDirty: false)
-                try fsi.update(targetPage: BufferManager.segmentPageId(of: secondPageId), freeSpace: secondPage.getFreeSpace())
+                try fsi.update(
+                    targetPage: BufferManager.segmentPageId(of: secondPageId), freeSpace: secondPage.getFreeSpace())
                 bufferManager.unfixPage(secondFrame, isDirty: true)
                 return
             } else {
@@ -189,17 +192,20 @@ public final class SPSegment: Segment {
                 let copySize = Swift.min(secondSlot.size, newLength)
                 if copySize > 0 {
                     thirdFrame.data.advanced(by: Int(thirdSlot.offset))
-                        .copyMemory(from: secondFrame.data.advanced(by: Int(secondSlot.offset)), byteCount: Int(copySize))
+                        .copyMemory(
+                            from: secondFrame.data.advanced(by: Int(secondSlot.offset)), byteCount: Int(copySize))
                 }
 
                 var redirectingSlot = firstSlot
                 redirectingSlot.setRedirectTID(newTID)
                 firstPage.setSlot(redirectingSlot, at: tid.slot)
 
-                try fsi.update(targetPage: BufferManager.segmentPageId(of: firstPageId), freeSpace: firstPage.getFreeSpace())
+                try fsi.update(
+                    targetPage: BufferManager.segmentPageId(of: firstPageId), freeSpace: firstPage.getFreeSpace())
                 bufferManager.unfixPage(firstFrame, isDirty: true)
                 bufferManager.unfixPage(secondFrame, isDirty: false)
-                try fsi.update(targetPage: BufferManager.segmentPageId(of: thirdPageId), freeSpace: thirdPage.getFreeSpace())
+                try fsi.update(
+                    targetPage: BufferManager.segmentPageId(of: thirdPageId), freeSpace: thirdPage.getFreeSpace())
                 bufferManager.unfixPage(thirdFrame, isDirty: true)
 
                 try erase(tid: redirectTID)
@@ -225,9 +231,9 @@ public final class SPSegment: Segment {
         // Free the slot's data on the first page (we lose the slot-table
         // entry's-worth of free space because the slot itself stays around as
         // a redirect).
-        firstPage.freeSpace = firstPage.freeSpace + firstSlot.size
+        firstPage.freeSpace += firstSlot.size
         if firstSlot.offset == firstPage.dataStart {
-            firstPage.dataStart = firstPage.dataStart + firstSlot.size
+            firstPage.dataStart += firstSlot.size
         }
 
         var redirectingSlot = firstSlot

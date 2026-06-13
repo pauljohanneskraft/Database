@@ -24,7 +24,7 @@ public final class PosixFile: File, @unchecked Sendable {
     public convenience init(filename: String, mode: FileMode) throws {
         let flags: Int32
         switch mode {
-        case .read:  flags = O_RDONLY | O_CLOEXEC
+        case .read: flags = O_RDONLY | O_CLOEXEC
         case .write: flags = O_RDWR | O_CREAT | O_CLOEXEC
         }
         let fd = filename.withCString { open($0, flags, 0o666) }

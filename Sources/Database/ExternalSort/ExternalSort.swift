@@ -38,7 +38,9 @@ public func externalSort(
     compare: (UnsafeRawPointer, UnsafeRawPointer) -> Bool
 ) throws {
     precondition(elementSize > 0, "elementSize must be positive")
-    precondition(memSize >= 2 * elementSize, "memSize must hold at least two elements (got \(memSize) bytes for \(elementSize)-byte elements)")
+    precondition(
+        memSize >= 2 * elementSize,
+        "memSize must hold at least two elements (got \(memSize) bytes for \(elementSize)-byte elements)")
     guard numElements > 0 else { return }
 
     let numMemElems = memSize / elementSize

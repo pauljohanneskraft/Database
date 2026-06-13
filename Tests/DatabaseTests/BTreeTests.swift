@@ -3,7 +3,7 @@ import Testing
 import Dispatch
 @testable import Database
 
-private typealias U64Tree = BTree<UInt64, UInt64>
+private typealias U64Tree = BTree<UInt64>
 
 /// Allocate a zero-filled page-sized buffer for `LeafNode` / `InnerNode`
 /// view tests.
@@ -26,50 +26,38 @@ private struct SeededGenerator: RandomNumberGenerator {
     }
 }
 
-/// Simple barrier — substitutes for `std::barrier` in `MultithreadWriters`.
-/// Pthread barriers aren't available on Darwin, so we hand-roll one with a
-/// mutex + condition variable.
-private final class Barrier: @unchecked Sendable {
-    private let total: Int
-    private var arrived: Int = 0
-    private let lock = NSCondition()
-
-    init(count: Int) { self.total = count }
-
-    func arriveAndWait() {
-        lock.lock()
-        arrived += 1
-        if arrived == total {
-            lock.broadcast()
-        } else {
-            while arrived < total { lock.wait() }
-        }
-        lock.unlock()
-    }
-}
-
 @Suite(.serialized)
 struct BTreeTests {
     // MARK: - Capacity
 
     @Test func capacity() throws {
+        // 8-byte UInt64 keys, 8-byte UInt64 values.
+        func innerCap(_ pageSize: Int) -> Int { U64Tree.innerCapacity(pageSize: pageSize, keyStride: 8) }
+        func leafCap(_ pageSize: Int) -> Int {
+            U64Tree.leafCapacity(pageSize: pageSize, keyStride: 8, valueStride: 8)
+        }
+        func innerSize(_ pageSize: Int) -> Int { U64Tree.innerNodeSize(pageSize: pageSize, keyStride: 8) }
+        func leafSize(_ pageSize: Int) -> Int {
+            U64Tree.leafNodeSize(pageSize: pageSize, keyStride: 8, valueStride: 8)
+        }
+
         // Both capacities are non-trivial — they are NOT 42.
-        #expect(U64Tree.innerCapacity(pageSize: 1024) != 42)
-        #expect(U64Tree.leafCapacity(pageSize: 1024) != 42)
+        #expect(innerCap(1024) != 42)
+        #expect(leafCap(1024) != 42)
 
         // Inner / leaf node sizes fit comfortably in a 1024-byte page and
         // make use of most of it (≥ 1000 bytes of payload).
-        #expect(1000 <= U64Tree.innerNodeSize(pageSize: 1024))
-        #expect(U64Tree.innerNodeSize(pageSize: 1024) <= 1024)
-        #expect(1000 <= U64Tree.leafNodeSize(pageSize: 1024))
-        #expect(U64Tree.leafNodeSize(pageSize: 1024) <= 1024)
+        #expect(1000 <= innerSize(1024))
+        #expect(innerSize(1024) <= 1024)
+        #expect(1000 <= leafSize(1024))
+        #expect(leafSize(1024) <= 1024)
 
         // Larger pages → larger fanout.
         let bigPage = 1 << 16
-        #expect(64000 <= U64Tree.innerNodeSize(pageSize: bigPage))
-        #expect(U64Tree.innerNodeSize(pageSize: bigPage) <= bigPage)
-        #expect(64000 <= U64Tree.leafNodeSize(pageSize: bigPage))
-        #expect(U64Tree.leafNodeSize(pageSize: bigPage) <= bigPage)
+        #expect(64000 <= innerSize(bigPage))
+        #expect(innerSize(bigPage) <= bigPage)
+        #expect(64000 <= leafSize(bigPage))
+        #expect(leafSize(bigPage) <= bigPage)
     }
 
     // MARK: - LeafNode (raw-buffer) tests
@@ -154,7 +142,7 @@ struct BTreeTests {
         try TestSupport.withTempCwd {
             let bufferManager = BufferManager(pageSize: 1024, pageCount: 100)
             let tree = U64Tree(segmentId: 0, bufferManager: bufferManager)
-            try tree.insert(42, 21)
+            try tree.insert(42 as UInt64, 21)
 
             let rootPage = try bufferManager.fixPage(pageId: tree.root, exclusive: false)
             defer { bufferManager.unfixPage(rootPage, isDirty: false) }
@@ -168,7 +156,7 @@ struct BTreeTests {
         try TestSupport.withTempCwd {
             let bufferManager = BufferManager(pageSize: 1024, pageCount: 100)
             let tree = U64Tree(segmentId: 0, bufferManager: bufferManager)
-            let leafCap = U64Tree.leafCapacity(pageSize: 1024)
+            let leafCap = U64Tree.leafCapacity(pageSize: 1024, keyStride: 8, valueStride: 8)
             for i in 0..<leafCap {
                 try tree.insert(UInt64(i), UInt64(2 * i))
             }
@@ -185,7 +173,7 @@ struct BTreeTests {
         try TestSupport.withTempCwd {
             let bufferManager = BufferManager(pageSize: 1024, pageCount: 100)
             let tree = U64Tree(segmentId: 0, bufferManager: bufferManager)
-            let leafCap = U64Tree.leafCapacity(pageSize: 1024)
+            let leafCap = U64Tree.leafCapacity(pageSize: 1024, keyStride: 8, valueStride: 8)
             for i in 0..<leafCap {
                 try tree.insert(UInt64(i), UInt64(2 * i))
             }
@@ -199,7 +187,7 @@ struct BTreeTests {
             }
 
             // Trigger a split.
-            try tree.insert(424242, 42)
+            try tree.insert(424242 as UInt64, 42)
 
             let rootPage = try bufferManager.fixPage(pageId: tree.root, exclusive: false)
             defer { bufferManager.unfixPage(rootPage, isDirty: false) }
@@ -215,7 +203,7 @@ struct BTreeTests {
         try TestSupport.withTempCwd {
             let bufferManager = BufferManager(pageSize: 1024, pageCount: 100)
             let tree = U64Tree(segmentId: 0, bufferManager: bufferManager)
-            do { let _v = try tree.lookup(42); #expect(_v == nil) }
+            do { let _v = try tree.lookup(42 as UInt64); #expect(_v == nil) }
         }
     }
 
@@ -223,7 +211,7 @@ struct BTreeTests {
         try TestSupport.withTempCwd {
             let bufferManager = BufferManager(pageSize: 1024, pageCount: 100)
             let tree = U64Tree(segmentId: 0, bufferManager: bufferManager)
-            let leafCap = U64Tree.leafCapacity(pageSize: 1024)
+            let leafCap = U64Tree.leafCapacity(pageSize: 1024, keyStride: 8, valueStride: 8)
 
             for i in 0..<leafCap {
                 try tree.insert(UInt64(i), UInt64(2 * i))
@@ -241,7 +229,7 @@ struct BTreeTests {
         try TestSupport.withTempCwd {
             let bufferManager = BufferManager(pageSize: 1024, pageCount: 100)
             let tree = U64Tree(segmentId: 0, bufferManager: bufferManager)
-            let leafCap = U64Tree.leafCapacity(pageSize: 1024)
+            let leafCap = U64Tree.leafCapacity(pageSize: 1024, keyStride: 8, valueStride: 8)
 
             for i in 0..<leafCap {
                 try tree.insert(UInt64(i), UInt64(2 * i))
@@ -261,7 +249,7 @@ struct BTreeTests {
         try TestSupport.withTempCwd {
             let bufferManager = BufferManager(pageSize: 1024, pageCount: 100)
             let tree = U64Tree(segmentId: 0, bufferManager: bufferManager)
-            let n = 100 * U64Tree.leafCapacity(pageSize: 1024)
+            let n = 100 * U64Tree.leafCapacity(pageSize: 1024, keyStride: 8, valueStride: 8)
 
             for i in 0..<n {
                 try tree.insert(UInt64(i), UInt64(2 * i))
@@ -279,7 +267,7 @@ struct BTreeTests {
         try TestSupport.withTempCwd {
             let bufferManager = BufferManager(pageSize: 1024, pageCount: 100)
             let tree = U64Tree(segmentId: 0, bufferManager: bufferManager)
-            let n = 10 * U64Tree.leafCapacity(pageSize: 1024)
+            let n = 10 * U64Tree.leafCapacity(pageSize: 1024, keyStride: 8, valueStride: 8)
 
             var i = n
             while i > 0 {
@@ -301,7 +289,7 @@ struct BTreeTests {
         try TestSupport.withTempCwd {
             let bufferManager = BufferManager(pageSize: 1024, pageCount: 100)
             let tree = U64Tree(segmentId: 0, bufferManager: bufferManager)
-            let n = 10 * U64Tree.leafCapacity(pageSize: 1024)
+            let n = 10 * U64Tree.leafCapacity(pageSize: 1024, keyStride: 8, valueStride: 8)
 
             var keys: [UInt64] = (0..<n).map { UInt64(n + $0) }
             var rng = SeededGenerator(seed: 0)
@@ -323,7 +311,7 @@ struct BTreeTests {
         try TestSupport.withTempCwd {
             let bufferManager = BufferManager(pageSize: 1024, pageCount: 100)
             let tree = U64Tree(segmentId: 0, bufferManager: bufferManager)
-            let n = 10 * U64Tree.leafCapacity(pageSize: 1024)
+            let n = 10 * U64Tree.leafCapacity(pageSize: 1024, keyStride: 8, valueStride: 8)
 
             var rng = SeededGenerator(seed: 0)
             var values: [UInt64] = Array(repeating: 0, count: 100)
@@ -352,7 +340,7 @@ struct BTreeTests {
         try TestSupport.withTempCwd {
             let bufferManager = BufferManager(pageSize: 1024, pageCount: 100)
             let tree = U64Tree(segmentId: 0, bufferManager: bufferManager)
-            let leafCap = U64Tree.leafCapacity(pageSize: 1024)
+            let leafCap = U64Tree.leafCapacity(pageSize: 1024, keyStride: 8, valueStride: 8)
             let n = 2 * leafCap
 
             for i in 0..<n {
@@ -372,7 +360,7 @@ struct BTreeTests {
         try TestSupport.withTempCwd {
             let bufferManager = BufferManager(pageSize: 1024, pageCount: 100)
             let tree = U64Tree(segmentId: 0, bufferManager: bufferManager)
-            let leafCap = U64Tree.leafCapacity(pageSize: 1024)
+            let leafCap = U64Tree.leafCapacity(pageSize: 1024, keyStride: 8, valueStride: 8)
 
             let threadCount = 4
             let barrier = Barrier(count: threadCount)

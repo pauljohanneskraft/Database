@@ -352,7 +352,7 @@ public final class Sort: UnaryOperator, Operator {
             try? spill?.write(row)
         }
 
-        guard let spill else { return false } // empty input
+        guard let spill else { return false }  // empty input
         try? spill.finish()
         spillover = spill
         return spill.next()
@@ -493,11 +493,13 @@ public final class HashAggregation: UnaryOperator, Operator {
                 let attr = row[fn.attrIndex]
                 switch fn.function {
                 case .sum:
-                    group[i] = keyDidNotExist
+                    group[i] =
+                        keyDidNotExist
                         ? attr.copy()
                         : Register.from(int: group[i].asInt &+ attr.asInt)
                 case .count:
-                    group[i] = keyDidNotExist
+                    group[i] =
+                        keyDidNotExist
                         ? Register.from(int: 1)
                         : Register.from(int: group[i].asInt &+ 1)
                 case .min:

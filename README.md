@@ -43,6 +43,16 @@ swift run sql mydb --open-only                # fail if the database doesn't alr
 
 ---
 
+## Documentation
+
+API reference for every public type is published with [DocC](https://www.swift.org/documentation/docc/) to GitHub Pages:
+
+**https://pauljohanneskraft.github.io/Database/documentation/database/**
+
+The landing page lists every public symbol grouped by kind, and each type links down to its members — so the whole API is reachable by clicking, no URL-guessing. The docs are rebuilt and redeployed on every push to `main`.
+
+---
+
 ## How the layers fit together
 
 A query falls through these layers from top to bottom. Each is a directory under `Sources/Database/`.

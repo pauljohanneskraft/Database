@@ -10,10 +10,10 @@ public struct BoundQuery {
     }
 
     public struct BoundAttr {
-        public let scanIndex: Int   // which relation this attribute came from
-        public let columnIndex: Int // column ordinal within that relation
+        public let scanIndex: Int  // which relation this attribute came from
+        public let columnIndex: Int  // column ordinal within that relation
         public let type: SchemaType
-        public let name: String     // for display / diagnostics
+        public let name: String  // for display / diagnostics
     }
 
     public let relations: [BoundRel]
@@ -97,7 +97,14 @@ public struct SemanticAnalysis {
             try Self.resolveAttribute(ref, in: boundRels)
         }
 
-        let projections = try ast.projections.map(resolveAttr)
+        let projections = try ast.projections.map { item -> BoundQuery.BoundAttr in
+            switch item {
+            case .column(let ref):
+                return try resolveAttr(ref)
+            case .aggregate:
+                throw SQLError.bind("aggregate functions in the SELECT list are not yet supported")
+            }
+        }
         let selections = try ast.selections.map { (ref, lit) -> (BoundQuery.BoundAttr, QueryAST.Literal) in
             let attr = try resolveAttr(ref)
             try Self.checkLiteralType(lit, attr: attr)

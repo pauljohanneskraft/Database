@@ -252,8 +252,9 @@ struct SlottedPagesSuite {
                 _ = try readBuffer.withUnsafeMutableBytes { rb -> UInt32 in
                     try sp.read(tid: tid, into: rb.baseAddress!, capacity: s)
                 }
-                #expect(Array(writeBuffer.prefix(size)) == Array(readBuffer.prefix(size)),
-                        "size=\(size) mismatch on first read")
+                #expect(
+                    Array(writeBuffer.prefix(size)) == Array(readBuffer.prefix(size)),
+                    "size=\(size) mismatch on first read")
                 size *= 2
             }
 
@@ -266,8 +267,9 @@ struct SlottedPagesSuite {
                 _ = try readBuffer.withUnsafeMutableBytes { rb -> UInt32 in
                     try sp.read(tid: tids[idx], into: rb.baseAddress!, capacity: s)
                 }
-                #expect(Array(writeBuffer.prefix(size)) == Array(readBuffer.prefix(size)),
-                        "size=\(size) mismatch on re-read")
+                #expect(
+                    Array(writeBuffer.prefix(size)) == Array(readBuffer.prefix(size)),
+                    "size=\(size) mismatch on re-read")
                 idx += 1
                 size *= 2
             }
@@ -541,13 +543,17 @@ struct SlottedPagesSuite {
         #expect(page.slotCount == 3)
         #expect(page.firstFreeSlot == 3)
         #expect(page.dataStart == UInt32(pageSize) - 3 * recordSize)
-        #expect(page.freeSpace == UInt32(pageSize) - 3 * recordSize - 3 * UInt32(SlottedPage.slotSize) - UInt32(SlottedPage.headerSize))
+        #expect(
+            page.freeSpace == UInt32(pageSize) - 3 * recordSize - 3 * UInt32(SlottedPage.slotSize)
+                - UInt32(SlottedPage.headerSize))
 
         page.relocate(slotId: slot2, dataSize: 2 * recordSize, pageSize: pageSize)
         #expect(page.slotCount == 3)
         #expect(page.firstFreeSlot == 3)
         #expect(page.dataStart == UInt32(pageSize) - 5 * recordSize)
-        #expect(page.freeSpace == UInt32(pageSize) - 4 * recordSize - 3 * UInt32(SlottedPage.slotSize) - UInt32(SlottedPage.headerSize))
+        #expect(
+            page.freeSpace == UInt32(pageSize) - 4 * recordSize - 3 * UInt32(SlottedPage.slotSize)
+                - UInt32(SlottedPage.headerSize))
     }
 
     /// Fills the page to `freeSpace == 20` then relocates one slot to 28
@@ -576,7 +582,9 @@ struct SlottedPagesSuite {
         #expect(page.slotCount == UInt16(dummyRecords))
         #expect(page.firstFreeSlot == UInt16(dummyRecords))
         #expect(page.dataStart == UInt32(pageSize) - dummyRecords * recordSize)
-        #expect(page.freeSpace == UInt32(pageSize) - dummyRecords * recordSize - dummyRecords * UInt32(SlottedPage.slotSize) - UInt32(SlottedPage.headerSize))
+        #expect(
+            page.freeSpace == UInt32(pageSize) - dummyRecords * recordSize - dummyRecords * UInt32(SlottedPage.slotSize)
+                - UInt32(SlottedPage.headerSize))
         #expect(page.freeSpace == 20)
 
         page.relocate(slotId: 2, dataSize: 28, pageSize: pageSize)

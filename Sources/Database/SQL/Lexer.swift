@@ -70,7 +70,7 @@ public struct Lexer {
     // MARK: - Literals
 
     private mutating func readString(quote: Character, start: Span) throws -> Token {
-        advance() // opening quote
+        advance()  // opening quote
         var s = ""
         while let c = peek() {
             if c == quote {
@@ -149,35 +149,35 @@ public struct Lexer {
         }
         switch s.lowercased() {
         case "select": return .select
-        case "from":   return .from
-        case "where":  return .whereKW
-        case "and":    return .and
-        case "not":    return .not
-        case "true":   return .trueKW
-        case "false":  return .falseKW
-        case "order":  return .order
-        case "by":     return .by
-        case "group":  return .group
-        case "asc":    return .asc
-        case "desc":   return .desc
-        case "union":     return .union
+        case "from": return .from
+        case "where": return .whereKW
+        case "and": return .and
+        case "not": return .not
+        case "true": return .trueKW
+        case "false": return .falseKW
+        case "order": return .order
+        case "by": return .by
+        case "group": return .group
+        case "asc": return .asc
+        case "desc": return .desc
+        case "union": return .union
         case "intersect": return .intersect
-        case "except":    return .except
-        case "all":       return .all
+        case "except": return .except
+        case "all": return .all
         case "create": return .create
-        case "table":  return .table
-        case "drop":   return .drop
+        case "table": return .table
+        case "drop": return .drop
         case "insert": return .insert
-        case "into":   return .into
+        case "into": return .into
         case "values": return .values
-        case "copy":   return .copy
+        case "copy": return .copy
         case "primary": return .primary
-        case "key":    return .key
-        case "index":  return .index
-        case "on":     return .on
-        case "csv":    return .csv
+        case "key": return .key
+        case "index": return .index
+        case "on": return .on
+        case "csv": return .csv
         case "header": return .header
-        default:       return .identifier(s)
+        default: return .identifier(s)
         }
     }
 

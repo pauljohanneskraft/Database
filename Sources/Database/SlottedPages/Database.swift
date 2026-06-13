@@ -160,8 +160,9 @@ public final class Database {
 
         // Auto-index a single-column primary key on an indexable type.
         if primaryKey.count == 1,
-           let pkCol = table.columns.first(where: { $0.id == primaryKey[0] }),
-           pkCol.type.tclass == .integer || pkCol.type.tclass == .char {
+            let pkCol = table.columns.first(where: { $0.id == primaryKey[0] }),
+            pkCol.type.tclass == .integer || pkCol.type.tclass == .char
+        {
             try createIndex(name: "pk_\(id)", tableId: id, columnName: pkCol.id)
         }
         return table

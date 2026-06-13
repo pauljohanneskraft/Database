@@ -202,7 +202,7 @@ struct IndexSuite {
             _ = try exec.execute("CREATE INDEX idx_b ON t (b);")
 
             let op = try plan("SELECT a FROM t WHERE b = 'pear';", db: db)
-            #expect(op is Projection) // Projection over TIDResolve over IndexScan
+            #expect(op is Projection)  // Projection over TIDResolve over IndexScan
 
             let out = try exec.execute("SELECT a FROM t WHERE b = 'pear';")
             #expect(out == "20\n")

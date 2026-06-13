@@ -99,7 +99,8 @@ public final class SchemaSegment: Segment {
         if firstChunk > 0 {
             bytes.withUnsafeBytes { src in
                 if let s = src.baseAddress {
-                    firstFrame.data.advanced(by: 20).copyMemory(from: s.advanced(by: bufferOffset), byteCount: firstChunk)
+                    firstFrame.data.advanced(by: 20).copyMemory(
+                        from: s.advanced(by: bufferOffset), byteCount: firstChunk)
                 }
             }
             bufferOffset += firstChunk

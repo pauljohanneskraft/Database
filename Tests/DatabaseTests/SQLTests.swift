@@ -44,37 +44,40 @@ struct SQLSuite {
     @Test func lexerKeywordsAndPunctuation() throws {
         var lex = Lexer("SELECT * FROM t WHERE x = 1 AND y = 2;")
         let toks = try lex.tokenize().map(\.token)
-        #expect(toks == [
-            .select, .star, .from, .identifier("t"), .whereKW,
-            .identifier("x"), .equal, .integerLit(1),
-            .and, .identifier("y"), .equal, .integerLit(2),
-            .semicolon, .eof,
-        ])
+        #expect(
+            toks == [
+                .select, .star, .from, .identifier("t"), .whereKW,
+                .identifier("x"), .equal, .integerLit(1),
+                .and, .identifier("y"), .equal, .integerLit(2),
+                .semicolon, .eof,
+            ])
     }
 
     @Test func lexerStringAndDottedIdent() throws {
         var lex = Lexer("select s.name from studenten s where s.name = 'Sokrates'")
         let toks = try lex.tokenize().map(\.token)
-        #expect(toks == [
-            .select, .identifier("s"), .dot, .identifier("name"),
-            .from, .identifier("studenten"), .identifier("s"),
-            .whereKW, .identifier("s"), .dot, .identifier("name"),
-            .equal, .stringLit("Sokrates"),
-            .eof,
-        ])
+        #expect(
+            toks == [
+                .select, .identifier("s"), .dot, .identifier("name"),
+                .from, .identifier("studenten"), .identifier("s"),
+                .whereKW, .identifier("s"), .dot, .identifier("name"),
+                .equal, .stringLit("Sokrates"),
+                .eof,
+            ])
     }
 
     @Test func lexerNumbers() throws {
         var lex = Lexer("1 2.5 -3 4e2 5.0e-1")
         let toks = try lex.tokenize().map(\.token)
-        #expect(toks == [
-            .integerLit(1),
-            .doubleLit(2.5),
-            .integerLit(-3),
-            .doubleLit(400),
-            .doubleLit(0.5),
-            .eof,
-        ])
+        #expect(
+            toks == [
+                .integerLit(1),
+                .doubleLit(2.5),
+                .integerLit(-3),
+                .doubleLit(400),
+                .doubleLit(0.5),
+                .eof,
+            ])
     }
 
     @Test func lexerUnterminatedString() throws {
@@ -83,7 +86,7 @@ struct SQLSuite {
             _ = try lex.tokenize()
             Issue.record("expected lex error")
         } catch let e as SQLError {
-            if case .lex = e { /* ok */ } else { Issue.record("wrong error kind: \(e)") }
+            if case .lex = e { /* ok */  } else { Issue.record("wrong error kind: \(e)") }
         }
     }
 
@@ -106,8 +109,12 @@ struct SQLSuite {
     @Test func parserMultiAttr() throws {
         let ast = try Self.parseSelect("select s.name, s.semester from studenten s")
         #expect(ast.projections.count == 2)
-        #expect(ast.projections[0].name == "name")
-        #expect(ast.projections[0].relation == "s")
+        guard case .column(let first) = ast.projections[0] else {
+            Issue.record("expected a plain column projection")
+            return
+        }
+        #expect(first.name == "name")
+        #expect(first.relation == "s")
     }
 
     @Test func parserWhereSelection() throws {
@@ -136,7 +143,7 @@ struct SQLSuite {
             _ = try parser.parse()
             Issue.record("expected parse error")
         } catch let e as SQLError {
-            if case .parse = e { /* ok */ } else { Issue.record("wrong error kind: \(e)") }
+            if case .parse = e { /* ok */  } else { Issue.record("wrong error kind: \(e)") }
         }
     }
 
@@ -252,8 +259,8 @@ struct SQLSuite {
             try db.loadNewSchema(Self.studentenSchema())
             let students = db.schema!.tables[0]
             try db.insert(table: students, values: ["24002", Self.padded("Xenokrates"), "18"])
-            try db.insert(table: students, values: ["26120", Self.padded("Fichte"),     "10"])
-            try db.insert(table: students, values: ["29555", Self.padded("Feuerbach"),  "2"])
+            try db.insert(table: students, values: ["26120", Self.padded("Fichte"), "10"])
+            try db.insert(table: students, values: ["29555", Self.padded("Feuerbach"), "2"])
 
             let out = try runQuery("select * from studenten s", on: db)
             let lines = out.split(separator: "\n").sorted()
@@ -270,8 +277,8 @@ struct SQLSuite {
             try db.loadNewSchema(Self.studentenSchema())
             let students = db.schema!.tables[0]
             try db.insert(table: students, values: ["24002", Self.padded("Xenokrates"), "18"])
-            try db.insert(table: students, values: ["26120", Self.padded("Fichte"),     "10"])
-            try db.insert(table: students, values: ["29555", Self.padded("Feuerbach"),  "2"])
+            try db.insert(table: students, values: ["26120", Self.padded("Fichte"), "10"])
+            try db.insert(table: students, values: ["29555", Self.padded("Feuerbach"), "2"])
 
             let out = try runQuery(
                 "select s.name from studenten s where s.matrnr = 26120;",
@@ -288,10 +295,10 @@ struct SQLSuite {
             let students = db.schema!.tables[0]
             let hoeren = db.schema!.tables[1]
             try db.insert(table: students, values: ["24002", Self.padded("Xenokrates"), "18"])
-            try db.insert(table: students, values: ["26120", Self.padded("Fichte"),     "10"])
-            try db.insert(table: hoeren,   values: ["24002", "5001"])
-            try db.insert(table: hoeren,   values: ["24002", "5041"])
-            try db.insert(table: hoeren,   values: ["26120", "5022"])
+            try db.insert(table: students, values: ["26120", Self.padded("Fichte"), "10"])
+            try db.insert(table: hoeren, values: ["24002", "5001"])
+            try db.insert(table: hoeren, values: ["24002", "5041"])
+            try db.insert(table: hoeren, values: ["26120", "5022"])
 
             let out = try runQuery(
                 "select s.name, h.vorlnr from studenten s, hoeren h where s.matrnr = h.matrnr",
@@ -365,7 +372,8 @@ struct SQLSuite {
         var lex = Lexer(source)
         var parser = Parser(try lex.tokenize())
         guard case .select(let expr) = try parser.parse(),
-              case .leaf(let q) = expr else {
+            case .leaf(let q) = expr
+        else {
             throw SQLError.parse(.zero, "expected single SELECT statement")
         }
         return q

@@ -25,9 +25,11 @@ struct SetOpSQLSuite {
     }
 
     @Test func parseChainedUnion() throws {
-        guard case .select(let expr) = try parseStatement(
-            "SELECT a FROM t UNION SELECT a FROM u;"
-        ) else { Issue.record("expected select"); return }
+        guard
+            case .select(let expr) = try parseStatement(
+                "SELECT a FROM t UNION SELECT a FROM u;"
+            )
+        else { Issue.record("expected select"); return }
         guard case .setOp(_, let op, let all, _) = expr else {
             Issue.record("expected setOp at root"); return
         }
@@ -36,9 +38,11 @@ struct SetOpSQLSuite {
     }
 
     @Test func parseUnionAll() throws {
-        guard case .select(let expr) = try parseStatement(
-            "SELECT a FROM t UNION ALL SELECT a FROM u;"
-        ) else { Issue.record("expected select"); return }
+        guard
+            case .select(let expr) = try parseStatement(
+                "SELECT a FROM t UNION ALL SELECT a FROM u;"
+            )
+        else { Issue.record("expected select"); return }
         guard case .setOp(_, .union, let all, _) = expr else {
             Issue.record("expected union setOp"); return
         }
@@ -46,9 +50,11 @@ struct SetOpSQLSuite {
     }
 
     @Test func parseParenthesised() throws {
-        guard case .select(let expr) = try parseStatement(
-            "(SELECT a FROM t) UNION (SELECT a FROM u);"
-        ) else { Issue.record("expected select"); return }
+        guard
+            case .select(let expr) = try parseStatement(
+                "(SELECT a FROM t) UNION (SELECT a FROM u);"
+            )
+        else { Issue.record("expected select"); return }
         guard case .setOp(let l, .union, _, let r) = expr else {
             Issue.record("expected union setOp"); return
         }
@@ -59,9 +65,11 @@ struct SetOpSQLSuite {
     /// INTERSECT binds tighter than UNION: `A UNION B INTERSECT C` parses as
     /// `A UNION (B INTERSECT C)`.
     @Test func intersectBindsTighterThanUnion() throws {
-        guard case .select(let expr) = try parseStatement(
-            "SELECT a FROM t UNION SELECT a FROM u INTERSECT SELECT a FROM v;"
-        ) else { Issue.record("expected select"); return }
+        guard
+            case .select(let expr) = try parseStatement(
+                "SELECT a FROM t UNION SELECT a FROM u INTERSECT SELECT a FROM v;"
+            )
+        else { Issue.record("expected select"); return }
         guard case .setOp(let left, .union, _, let right) = expr else {
             Issue.record("root should be UNION"); return
         }
@@ -73,9 +81,11 @@ struct SetOpSQLSuite {
 
     @Test func parenthesesOverridePrecedence() throws {
         // `(A UNION B) INTERSECT C` → root is INTERSECT.
-        guard case .select(let expr) = try parseStatement(
-            "(SELECT a FROM t UNION SELECT a FROM u) INTERSECT SELECT a FROM v;"
-        ) else { Issue.record("expected select"); return }
+        guard
+            case .select(let expr) = try parseStatement(
+                "(SELECT a FROM t UNION SELECT a FROM u) INTERSECT SELECT a FROM v;"
+            )
+        else { Issue.record("expected select"); return }
         guard case .setOp(let left, .intersect, _, _) = expr else {
             Issue.record("root should be INTERSECT"); return
         }
@@ -164,27 +174,35 @@ struct SetOpSQLSuite {
             _ = try exec.execute("CREATE TABLE t (a INT);")
             _ = try exec.execute("CREATE TABLE u (a INT);")
             for v in [1, 2, 3, 3] { _ = try exec.execute("INSERT INTO t VALUES (\(v));") }
-            for v in [3, 4]       { _ = try exec.execute("INSERT INTO u VALUES (\(v));") }
+            for v in [3, 4] { _ = try exec.execute("INSERT INTO u VALUES (\(v));") }
 
             // UNION (set): {1,2,3,4}
-            #expect(sortedLines(try exec.execute(
-                "SELECT a FROM t UNION SELECT a FROM u;"
-            )) == ["1", "2", "3", "4"])
+            #expect(
+                sortedLines(
+                    try exec.execute(
+                        "SELECT a FROM t UNION SELECT a FROM u;"
+                    )) == ["1", "2", "3", "4"])
 
             // UNION ALL (bag): 1,2,3,3 ++ 3,4
-            #expect(sortedLines(try exec.execute(
-                "SELECT a FROM t UNION ALL SELECT a FROM u;"
-            )) == ["1", "2", "3", "3", "3", "4"])
+            #expect(
+                sortedLines(
+                    try exec.execute(
+                        "SELECT a FROM t UNION ALL SELECT a FROM u;"
+                    )) == ["1", "2", "3", "3", "3", "4"])
 
             // INTERSECT (set): {3}
-            #expect(sortedLines(try exec.execute(
-                "SELECT a FROM t INTERSECT SELECT a FROM u;"
-            )) == ["3"])
+            #expect(
+                sortedLines(
+                    try exec.execute(
+                        "SELECT a FROM t INTERSECT SELECT a FROM u;"
+                    )) == ["3"])
 
             // EXCEPT (set): t minus u = {1,2}
-            #expect(sortedLines(try exec.execute(
-                "SELECT a FROM t EXCEPT SELECT a FROM u;"
-            )) == ["1", "2"])
+            #expect(
+                sortedLines(
+                    try exec.execute(
+                        "SELECT a FROM t EXCEPT SELECT a FROM u;"
+                    )) == ["1", "2"])
         }
     }
 
@@ -198,17 +216,21 @@ struct SetOpSQLSuite {
             }
             for v in [1, 2] { _ = try exec.execute("INSERT INTO t VALUES (\(v));") }
             for v in [2, 3] { _ = try exec.execute("INSERT INTO u VALUES (\(v));") }
-            for v in [3]    { _ = try exec.execute("INSERT INTO v VALUES (\(v));") }
+            for v in [3] { _ = try exec.execute("INSERT INTO v VALUES (\(v));") }
 
             // Default precedence: t UNION (u INTERSECT v) = {1,2} ∪ ({2,3}∩{3}) = {1,2,3}
-            #expect(sortedLines(try exec.execute(
-                "SELECT a FROM t UNION SELECT a FROM u INTERSECT SELECT a FROM v;"
-            )) == ["1", "2", "3"])
+            #expect(
+                sortedLines(
+                    try exec.execute(
+                        "SELECT a FROM t UNION SELECT a FROM u INTERSECT SELECT a FROM v;"
+                    )) == ["1", "2", "3"])
 
             // Parenthesised: (t UNION u) INTERSECT v = {1,2,3} ∩ {3} = {3}
-            #expect(sortedLines(try exec.execute(
-                "(SELECT a FROM t UNION SELECT a FROM u) INTERSECT SELECT a FROM v;"
-            )) == ["3"])
+            #expect(
+                sortedLines(
+                    try exec.execute(
+                        "(SELECT a FROM t UNION SELECT a FROM u) INTERSECT SELECT a FROM v;"
+                    )) == ["3"])
         }
     }
 }
