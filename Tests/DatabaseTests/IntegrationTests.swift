@@ -55,11 +55,7 @@ struct IntegrationSuite {
             printOp.open()
             while printOp.next() {}
             printOp.close()
-            #expect(output.contents == (
-                "3,Carol           \n" +
-                "1,Alice           \n" +
-                "2,Bob             \n"
-            ))
+            #expect(output.contents == ("3,Carol           \n" + "1,Alice           \n" + "2,Bob             \n"))
         }
     }
 
@@ -70,9 +66,11 @@ struct IntegrationSuite {
             let table = db.schema!.tables[0]
 
             var tids: [TID] = []
-            for (id, name) in [(1 as Int32, "Alice           "),
-                               (2 as Int32, "Bob             "),
-                               (3 as Int32, "Carol           ")] {
+            for (id, name) in [
+                (1 as Int32, "Alice           "),
+                (2 as Int32, "Bob             "),
+                (3 as Int32, "Carol           "),
+            ] {
                 tids.append(try db.insert(table: table, values: [String(id), name]))
             }
 
@@ -101,17 +99,17 @@ struct IntegrationSuite {
     @Test func indexScanLooksUpTID() throws {
         try TestSupport.withTempCwd {
             let bm = BufferManager(pageSize: 1024, pageCount: 32)
-            let tree = BTree<UInt64, UInt64>(segmentId: 5, bufferManager: bm)
-            try tree.insert(100, 0xDEAD_BEEF)
-            try tree.insert(200, 0xCAFE_F00D)
-            try tree.insert(300, 0x1234_5678)
+            let tree = BTree<UInt64>(segmentId: 5, bufferManager: bm)
+            try tree.insert(100 as UInt64, 0xDEAD_BEEF)
+            try tree.insert(200 as UInt64, 0xCAFE_F00D)
+            try tree.insert(300 as UInt64, 0x1234_5678)
 
             // Hit.
             do {
-                let scan = IndexScan(
-                    tree: tree,
-                    key: UInt64(200)
-                ) { v in Register.from(int: Int64(bitPattern: v)) }
+                let scan = IndexScan {
+                    guard let raw = try tree.lookup(UInt64(200)) else { return nil }
+                    return Register.from(int: Int64(bitPattern: raw))
+                }
                 scan.open()
                 #expect(scan.next())
                 #expect(scan.getOutput()[0].asInt == Int64(bitPattern: 0xCAFE_F00D))
@@ -120,10 +118,10 @@ struct IntegrationSuite {
             }
             // Miss.
             do {
-                let scan = IndexScan(
-                    tree: tree,
-                    key: UInt64(999)
-                ) { v in Register.from(int: Int64(bitPattern: v)) }
+                let scan = IndexScan {
+                    guard let raw = try tree.lookup(UInt64(999)) else { return nil }
+                    return Register.from(int: Int64(bitPattern: raw))
+                }
                 scan.open()
                 #expect(!scan.next())
                 scan.close()
@@ -183,7 +181,7 @@ struct IntegrationSuite {
             let sort = Sort(
                 input: source,
                 criteria: [Sort.Criterion(attrIndex: 0, descending: false)],
-                memoryBudgetBytes: 24 // force every row to spill individually
+                memoryBudgetBytes: 24  // force every row to spill individually
             )
             sort.open()
             var out: [String] = []
@@ -191,14 +189,15 @@ struct IntegrationSuite {
                 out.append(sort.getOutput()[0].asString)
             }
             sort.close()
-            #expect(out == [
-                "alpha           ",
-                "beta            ",
-                "delta           ",
-                "epsilon         ",
-                "mu              ",
-                "zeta            ",
-            ])
+            #expect(
+                out == [
+                    "alpha           ",
+                    "beta            ",
+                    "delta           ",
+                    "epsilon         ",
+                    "mu              ",
+                    "zeta            ",
+                ])
         }
     }
 
@@ -210,7 +209,7 @@ struct IntegrationSuite {
             let count = 1000
             let layout: [OperatorsSuite.TestSource.Column] = Array(repeating: .int64, count: 8)
             let rows: [[OperatorsSuite.TestSource.ColumnValue]] = (0..<count).map { i in
-                let primary = Int64((i * 48271) & 0xFF)       // many ties on key 0
+                let primary = Int64((i * 48271) & 0xFF)  // many ties on key 0
                 let secondary = Int64((i * 2654435761) & 0xFFFFFF)
                 var cols: [OperatorsSuite.TestSource.ColumnValue] = [.int(primary), .int(secondary)]
                 // Remaining columns carry a row signature so we can confirm the
@@ -225,7 +224,7 @@ struct IntegrationSuite {
                     Sort.Criterion(attrIndex: 0, descending: false),
                     Sort.Criterion(attrIndex: 1, descending: true),
                 ],
-                memoryBudgetBytes: 136 * 8 // a handful of rows per run → real merges
+                memoryBudgetBytes: 136 * 8  // a handful of rows per run → real merges
             )
             sort.open()
             var emitted: [[Int64]] = []
@@ -237,9 +236,11 @@ struct IntegrationSuite {
             #expect(emitted.count == count)
 
             // Expected ordering: key0 asc, then key1 desc.
-            let expected = rows.map { $0.map { v -> Int64 in
-                if case .int(let x) = v { return x } else { return 0 }
-            } }.sorted { l, r in
+            let expected = rows.map {
+                $0.map { v -> Int64 in
+                    if case .int(let x) = v { return x } else { return 0 }
+                }
+            }.sorted { l, r in
                 if l[0] != r[0] { return l[0] < r[0] }
                 return l[1] > r[1]
             }
@@ -249,7 +250,7 @@ struct IntegrationSuite {
 
     // MARK: - TableScan → BTree round-trip
 
-    /// Insert rows through `Database`, build a `BTree<UInt64, UInt64>`
+    /// Insert rows through `Database`, build a `BTree<UInt64>`
     /// mapping `id → TID.rawValue`, then use `IndexScan` to fetch a TID and
     /// `TableScan` to read the row that TID points at.
     @Test func indexScanThenTableScanRoundTrip() throws {
@@ -260,7 +261,7 @@ struct IntegrationSuite {
 
             // Use a segment id distinct from the SP/FSI ones so the BTree
             // doesn't collide with table data on disk.
-            let btree = BTree<UInt64, UInt64>(segmentId: 7, bufferManager: db.bufferManager)
+            let btree = BTree<UInt64>(segmentId: 7, bufferManager: db.bufferManager)
             var inserted: [(UInt64, String)] = []
             for (id, name) in [
                 (UInt64(101), "one_o_one       "),
@@ -275,7 +276,10 @@ struct IntegrationSuite {
             // Use IndexScan to fetch the TID by id, then a small "1-tuple"
             // TableScan to decode the row.
             let lookupId: UInt64 = 202
-            let indexScan = IndexScan(tree: btree, key: lookupId) { Register.from(int: Int64(bitPattern: $0)) }
+            let indexScan = IndexScan {
+                guard let raw = try btree.lookup(lookupId) else { return nil }
+                return Register.from(int: Int64(bitPattern: raw))
+            }
             indexScan.open()
             #expect(indexScan.next())
             let tidRaw = UInt64(bitPattern: indexScan.getOutput()[0].asInt)

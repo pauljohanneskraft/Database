@@ -3,7 +3,7 @@ import Testing
 
 /// Iterator-model operator tests.
 
-@Suite(.serialized) 
+@Suite(.serialized)
 struct OperatorsSuite {
 
     // MARK: - Test source operator
@@ -187,12 +187,16 @@ struct OperatorsSuite {
     // MARK: - CrossProduct
 
     @Test func crossProductBasic() {
-        let left = TestSource(layout: [.int64], rows: [
-            [.int(1)], [.int(2)],
-        ])
-        let right = TestSource(layout: [.int64], rows: [
-            [.int(10)], [.int(20)], [.int(30)],
-        ])
+        let left = TestSource(
+            layout: [.int64],
+            rows: [
+                [.int(1)], [.int(2)],
+            ])
+        let right = TestSource(
+            layout: [.int64],
+            rows: [
+                [.int(10)], [.int(20)], [.int(30)],
+            ])
         let cp = CrossProduct(inputLeft: left, inputRight: right)
         cp.open()
         var pairs: [(Int64, Int64)] = []
@@ -237,11 +241,7 @@ struct OperatorsSuite {
         while print.next() {}
         print.close()
         #expect(source.closed)
-        let expected = (
-            "24002,Xenokrates      \n" +
-            "26120,Fichte          \n" +
-            "29555,Feuerbach       \n"
-        )
+        let expected = ("24002,Xenokrates      \n" + "26120,Fichte          \n" + "29555,Feuerbach       \n")
         #expect(output.contents == expected)
     }
 
@@ -253,11 +253,7 @@ struct OperatorsSuite {
         print.open()
         while print.next() {}
         print.close()
-        let expected = (
-            "24002\n" +
-            "26120\n" +
-            "29555\n"
-        )
+        let expected = ("24002\n" + "26120\n" + "29555\n")
         #expect(Self.sortOutput(output.contents) == expected)
     }
 
@@ -301,10 +297,7 @@ struct OperatorsSuite {
         print.open()
         while print.next() {}
         print.close()
-        let expected = (
-            "24002,Xenokrates      \n" +
-            "29555,Feuerbach       \n"
-        )
+        let expected = ("24002,Xenokrates      \n" + "29555,Feuerbach       \n")
         #expect(Self.sortOutput(output.contents) == expected)
     }
 
@@ -336,10 +329,7 @@ struct OperatorsSuite {
             print.open()
             while print.next() {}
             print.close()
-            let expected = (
-                "26120,Fichte          \n" +
-                "29555,Feuerbach       \n"
-            )
+            let expected = ("26120,Fichte          \n" + "29555,Feuerbach       \n")
             #expect(Self.sortOutput(output.contents) == expected)
         }
     }
@@ -359,11 +349,7 @@ struct OperatorsSuite {
         print.open()
         while print.next() {}
         print.close()
-        let expected = (
-            "1,1\n" +
-            "2,1\n" +
-            "3,2\n"
-        )
+        let expected = ("1,1\n" + "2,1\n" + "3,2\n")
         #expect(Self.sortOutput(output.contents) == expected)
     }
 
@@ -371,20 +357,18 @@ struct OperatorsSuite {
 
     @Test func sort() {
         let source = TestSource(layout: Self.gradesLayout, rows: Self.relationGrades)
-        let sort = Sort(input: source, criteria: [
-            Sort.Criterion(attrIndex: 0, descending: true),
-            Sort.Criterion(attrIndex: 2, descending: false),
-        ])
+        let sort = Sort(
+            input: source,
+            criteria: [
+                Sort.Criterion(attrIndex: 0, descending: true),
+                Sort.Criterion(attrIndex: 2, descending: false),
+            ])
         let output = TextOutput()
         let print = Print(input: sort, stream: output)
         print.open()
         while print.next() {}
         print.close()
-        let expected = (
-            "29555,4630,2\n" +
-            "24002,5001,1\n" +
-            "24002,5041,2\n"
-        )
+        let expected = ("29555,4630,2\n" + "24002,5001,1\n" + "24002,5041,2\n")
         #expect(output.contents == expected)
     }
 
@@ -403,11 +387,9 @@ struct OperatorsSuite {
         print.close()
         #expect(students.closed)
         #expect(grades.closed)
-        let expected = (
-            "24002,Xenokrates      ,24002,5001,1\n" +
-            "24002,Xenokrates      ,24002,5041,2\n" +
-            "29555,Feuerbach       ,29555,4630,2\n"
-        )
+        let expected =
+            ("24002,Xenokrates      ,24002,5001,1\n" + "24002,Xenokrates      ,24002,5041,2\n"
+                + "29555,Feuerbach       ,29555,4630,2\n")
         #expect(Self.sortOutput(output.contents) == expected)
     }
 
@@ -446,10 +428,7 @@ struct OperatorsSuite {
         print.open()
         while print.next() {}
         print.close()
-        let expected = (
-            "24002,3,2\n" +
-            "29555,2,1\n"
-        )
+        let expected = ("24002,3,2\n" + "29555,2,1\n")
         #expect(Self.sortOutput(output.contents) == expected)
     }
 
@@ -476,9 +455,7 @@ struct OperatorsSuite {
         print.open()
         while print.next() {}
         print.close()
-        let expected = (
-            "1\n1\n2\n2\n3\n3\n3\n3\n3\n4\n4\n"
-        )
+        let expected = ("1\n1\n2\n2\n3\n3\n3\n3\n3\n4\n4\n")
         #expect(Self.sortOutput(output.contents) == expected)
     }
 

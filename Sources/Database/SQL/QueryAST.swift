@@ -105,11 +105,11 @@ public struct QueryAST: Equatable, Sendable {
 
     public static func == (lhs: QueryAST, rhs: QueryAST) -> Bool {
         guard lhs.relations == rhs.relations,
-              lhs.projections == rhs.projections,
-              lhs.groupBy == rhs.groupBy,
-              lhs.orderBy == rhs.orderBy,
-              lhs.selections.count == rhs.selections.count,
-              lhs.joins.count == rhs.joins.count
+            lhs.projections == rhs.projections,
+            lhs.groupBy == rhs.groupBy,
+            lhs.orderBy == rhs.orderBy,
+            lhs.selections.count == rhs.selections.count,
+            lhs.joins.count == rhs.joins.count
         else { return false }
         for (a, b) in zip(lhs.selections, rhs.selections) where a.0 != b.0 || a.1 != b.1 { return false }
         for (a, b) in zip(lhs.joins, rhs.joins) where a.0 != b.0 || a.1 != b.1 { return false }

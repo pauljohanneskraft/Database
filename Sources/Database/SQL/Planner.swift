@@ -31,12 +31,12 @@ public struct Planner {
             let l = try plan(left)
             let r = try plan(right)
             switch (op, all) {
-            case (.union, false):     return Union(inputLeft: l, inputRight: r)
-            case (.union, true):      return UnionAll(inputLeft: l, inputRight: r)
+            case (.union, false): return Union(inputLeft: l, inputRight: r)
+            case (.union, true): return UnionAll(inputLeft: l, inputRight: r)
             case (.intersect, false): return Intersect(inputLeft: l, inputRight: r)
-            case (.intersect, true):  return IntersectAll(inputLeft: l, inputRight: r)
-            case (.except, false):    return Except(inputLeft: l, inputRight: r)
-            case (.except, true):     return ExceptAll(inputLeft: l, inputRight: r)
+            case (.intersect, true): return IntersectAll(inputLeft: l, inputRight: r)
+            case (.except, false): return Except(inputLeft: l, inputRight: r)
+            case (.except, true): return ExceptAll(inputLeft: l, inputRight: r)
             }
         }
     }
@@ -66,8 +66,8 @@ public struct Planner {
             // present (i.e. one side has scanIndex < rel.scanIndex and the
             // other == rel.scanIndex).
             let pairIdx = remainingJoins.firstIndex { (a, b) in
-                (a.scanIndex < rel.scanIndex && b.scanIndex == rel.scanIndex) ||
-                (b.scanIndex < rel.scanIndex && a.scanIndex == rel.scanIndex)
+                (a.scanIndex < rel.scanIndex && b.scanIndex == rel.scanIndex)
+                    || (b.scanIndex < rel.scanIndex && a.scanIndex == rel.scanIndex)
             }
 
             if let pairIdx {
@@ -144,8 +144,8 @@ public struct Planner {
         for i in remainingSelections.indices {
             let (attr, lit) = remainingSelections[i]
             guard attr.scanIndex == rel.scanIndex,
-                  let index = db.index(on: rel.table, columnIndex: attr.columnIndex),
-                  let scan = index.indexScan(forLiteral: lit)
+                let index = db.index(on: rel.table, columnIndex: attr.columnIndex),
+                let scan = index.indexScan(forLiteral: lit)
             else { continue }
             remainingSelections.remove(at: i)
             return TIDResolve(input: scan, segment: sp, table: rel.table)
@@ -172,23 +172,31 @@ public struct Planner {
     ) -> any Operator {
         switch (literal, attr.type.tclass) {
         case (.int(let v), .integer):
-            return Select(input: input, predicate: Select.PredicateAttributeInt64(
-                attrIndex: slot, constant: v, predicateType: .eq
-            ))
+            return Select(
+                input: input,
+                predicate: Select.PredicateAttributeInt64(
+                    attrIndex: slot, constant: v, predicateType: .eq
+                ))
         case (.string(let v), .char):
             // Char values flow as content bytes (no padding), so the constant
             // is the raw literal — it compares equal to the column's content.
-            return Select(input: input, predicate: Select.PredicateAttributeChar16(
-                attrIndex: slot, constant: v, predicateType: .eq
-            ))
+            return Select(
+                input: input,
+                predicate: Select.PredicateAttributeChar16(
+                    attrIndex: slot, constant: v, predicateType: .eq
+                ))
         case (.double(let v), _):
-            return Select(input: input, predicate: Select.PredicateAttributeDouble(
-                attrIndex: slot, constant: v, predicateType: .eq
-            ))
+            return Select(
+                input: input,
+                predicate: Select.PredicateAttributeDouble(
+                    attrIndex: slot, constant: v, predicateType: .eq
+                ))
         case (.bool(let v), _):
-            return Select(input: input, predicate: Select.PredicateAttributeBool(
-                attrIndex: slot, constant: v, predicateType: .eq
-            ))
+            return Select(
+                input: input,
+                predicate: Select.PredicateAttributeBool(
+                    attrIndex: slot, constant: v, predicateType: .eq
+                ))
         default:
             // SemanticAnalysis already rejected impossible (lit, type)
             // pairs; falling through with an int-Int64 predicate keeps the

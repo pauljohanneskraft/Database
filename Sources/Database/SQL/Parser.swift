@@ -230,10 +230,10 @@ public struct Parser {
     private mutating func parseLiteral() throws -> QueryAST.Literal {
         switch peek().token {
         case .integerLit(let v): advance(); return .int(v)
-        case .doubleLit(let v):  advance(); return .double(v)
-        case .stringLit(let v):  advance(); return .string(v)
-        case .trueKW:            advance(); return .bool(true)
-        case .falseKW:           advance(); return .bool(false)
+        case .doubleLit(let v): advance(); return .double(v)
+        case .stringLit(let v): advance(); return .string(v)
+        case .trueKW: advance(); return .bool(true)
+        case .falseKW: advance(); return .bool(false)
         default:
             throw SQLError.parse(peek().span, "expected a literal value")
         }
@@ -278,16 +278,16 @@ public struct Parser {
 
     // MARK: - Productions
 
-    private mutating func parseProjectionList() throws -> [QueryAST.AttrRef] {
+    private mutating func parseProjectionList() throws -> [QueryAST.SelectItem] {
         if peek().token == .star {
             advance()
             return []
         }
-        var out: [QueryAST.AttrRef] = []
-        out.append(try parseAttrRef())
+        var out: [QueryAST.SelectItem] = []
+        out.append(.column(try parseAttrRef()))
         while peek().token == .comma {
             advance()
-            out.append(try parseAttrRef())
+            out.append(.column(try parseAttrRef()))
         }
         return out
     }
@@ -401,6 +401,11 @@ public struct Parser {
         case .whereKW: return "WHERE"
         case .and: return "AND"
         case .not: return "NOT"
+        case .order: return "ORDER"
+        case .by: return "BY"
+        case .group: return "GROUP"
+        case .asc: return "ASC"
+        case .desc: return "DESC"
         case .trueKW: return "TRUE"
         case .falseKW: return "FALSE"
         case .union: return "UNION"

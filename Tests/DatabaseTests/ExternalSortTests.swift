@@ -182,7 +182,7 @@ private func packRecords(keys: [UInt64], padBytes: Int) -> [UInt8] {
             // Payload — derived from the key so we can verify records weren't
             // shuffled apart from their keys.
             var tag = k &* 0x9E37_79B9_7F4A_7C15
-            for off in stride - padBytes ..< stride - padBytes + min(padBytes, 8) {
+            for off in stride - padBytes..<stride - padBytes + min(padBytes, 8) {
                 base.advanced(by: i * stride + off).storeBytes(
                     of: UInt8(tag & 0xff), as: UInt8.self
                 )
@@ -206,7 +206,7 @@ private func unpackKeys(from file: MemoryFile, stride: Int) -> [UInt64] {
 }
 
 @Test func genericRowSortInMemory() throws {
-    let stride = 34 // 8-byte key + 26-byte payload (≈ two registers' worth)
+    let stride = 34  // 8-byte key + 26-byte payload (≈ two registers' worth)
     let keys: [UInt64] = [10, 5, 7, 9, 11, 12, 3, 8, 1, 4, 6, 2]
     let input = MemoryFile(contents: packRecords(keys: keys, padBytes: stride - 8))
     let output = MemoryFile()
@@ -226,7 +226,7 @@ private func unpackKeys(from file: MemoryFile, stride: Int) -> [UInt64] {
 }
 
 @Test func genericRowSortRequiresMerge() throws {
-    let stride = 170 // 10 registers' worth — wide row
+    let stride = 170  // 10 registers' worth — wide row
     let keyCount = 5000
     var keys = [UInt64]()
     keys.reserveCapacity(keyCount)
