@@ -161,7 +161,8 @@ public struct Planner {
                 // `COUNT(*)` has no source column; the attrIndex is unread by
                 // `HashAggregation` for `.count`, so any valid slot works.
                 let attrIndex = arg.map { slotMap[SlotKey($0.scanIndex, $0.columnIndex)]! } ?? 0
-                aggrFuncs.append(HashAggregation.AggrFunc(function: Self.aggrFunction(for: function), attrIndex: attrIndex))
+                aggrFuncs.append(
+                    HashAggregation.AggrFunc(function: Self.aggrFunction(for: function), attrIndex: attrIndex))
                 aggregateProjectionIndexes.append(i)
             }
 
