@@ -121,7 +121,8 @@ struct SQLSuite {
         let ast = try Self.parseSelect("select * from studenten s where s.matrnr = 24002")
         #expect(ast.selections.count == 1)
         #expect(ast.joins.isEmpty)
-        if case .int(let v) = ast.selections[0].1 {
+        #expect(ast.selections[0].1 == .eq)
+        if case .int(let v) = ast.selections[0].2 {
             #expect(v == 24002)
         } else {
             Issue.record("expected int literal")
@@ -247,8 +248,12 @@ struct SQLSuite {
         // `name` is only on studenten.
         let ast = try Self.parseSelect("select name from studenten s, hoeren h")
         let bound = try SemanticAnalysis().analyse(ast, schema: Self.studentenSchema())
-        #expect(bound.projections[0].name == "name")
-        #expect(bound.projections[0].scanIndex == 0)
+        guard case .column(let attr) = bound.projections[0] else {
+            Issue.record("expected a plain column projection")
+            return
+        }
+        #expect(attr.name == "name")
+        #expect(attr.scanIndex == 0)
     }
 
     // MARK: - End-to-end (parse → plan → execute)
@@ -361,6 +366,111 @@ struct SQLSuite {
             #expect(lines.count == 3)
             #expect(lines[0].hasPrefix("1,alice"))
             #expect(lines[2].hasPrefix("3,carol"))
+        }
+    }
+
+    // MARK: - WHERE comparison operators
+
+    @Test func endToEndWhereInequality() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (a int);", on: db)
+            for i in 1...5 {
+                try Self.execute("insert into t values (\(i));", on: db)
+            }
+            #expect(Set(try Self.execute("select a from t where a < 3;", on: db).split(separator: "\n")) == ["1", "2"])
+            #expect(
+                Set(try Self.execute("select a from t where a >= 3;", on: db).split(separator: "\n"))
+                    == ["3", "4", "5"])
+            #expect(
+                Set(try Self.execute("select a from t where a != 3;", on: db).split(separator: "\n"))
+                    == ["1", "2", "4", "5"])
+        }
+    }
+
+    // MARK: - DOUBLE / BOOL columns
+
+    @Test func endToEndDoubleBoolColumns() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (id int, price double, active bool);", on: db)
+            try Self.execute("insert into t values (1, 3.5, true);", on: db)
+            try Self.execute("insert into t values (2, 9.25, false);", on: db)
+
+            let out = Set(try Self.execute("select * from t;", on: db).split(separator: "\n"))
+            #expect(out == ["1,3.5,true", "2,9.25,false"])
+
+            #expect(try Self.execute("select id from t where active = true;", on: db) == "1\n")
+            #expect(try Self.execute("select id from t where price < 5.0;", on: db) == "1\n")
+        }
+    }
+
+    // MARK: - HashJoin duplicate keys
+
+    @Test func endToEndHashJoinDuplicateLeftKeys() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table orders (oid int, cust int);", on: db)
+            try Self.execute("create table payments (oid int, amount int);", on: db)
+            // Two orders rows share `oid = 1` — the join must fan out both
+            // against the single matching payment, not drop one.
+            try Self.execute("insert into orders values (1, 100);", on: db)
+            try Self.execute("insert into orders values (1, 200);", on: db)
+            try Self.execute("insert into payments values (1, 50);", on: db)
+
+            let out = try Self.execute(
+                "select orders.cust, payments.amount from orders, payments where orders.oid = payments.oid;",
+                on: db)
+            #expect(Set(out.split(separator: "\n")) == ["100,50", "200,50"])
+        }
+    }
+
+    // MARK: - GROUP BY / aggregates / ORDER BY
+
+    @Test func endToEndGroupByAggregatesOrderBy() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table employees (dept char(8), salary int);", on: db)
+            try Self.execute("insert into employees values ('eng', 100);", on: db)
+            try Self.execute("insert into employees values ('eng', 200);", on: db)
+            try Self.execute("insert into employees values ('sales', 50);", on: db)
+
+            let out = try Self.execute(
+                "select dept, count(*), sum(salary) from employees group by dept order by dept;",
+                on: db)
+            #expect(out == "eng,2,300\n" + "sales,1,50\n")
+        }
+    }
+
+    @Test func endToEndGroupByWithoutAggregateFunction() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (dept char(8));", on: db)
+            try Self.execute("insert into t values ('eng');", on: db)
+            try Self.execute("insert into t values ('eng');", on: db)
+            try Self.execute("insert into t values ('sales');", on: db)
+
+            let out = try Self.execute("select dept from t group by dept;", on: db)
+            #expect(Set(out.split(separator: "\n")) == ["eng", "sales"])
+        }
+    }
+
+    @Test func endToEndOrderByPosition() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (a int);", on: db)
+            try Self.execute("insert into t values (3);", on: db)
+            try Self.execute("insert into t values (1);", on: db)
+            try Self.execute("insert into t values (2);", on: db)
+
+            let out = try Self.execute("select a from t order by 1 desc;", on: db)
+            #expect(out == "3\n2\n1\n")
         }
     }
 

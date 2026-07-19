@@ -388,13 +388,20 @@ private func makeComparator(criteria: [Sort.Criterion]) -> ([Register], [Registe
 
 // MARK: - HashJoin
 
-/// Inner equi-join on one attribute; left input must have unique keys.
-/// Builds a hash table on the entire left input on the first `next()`,
-/// then probes the right input one tuple at a time.
+/// Inner equi-join on one attribute. Builds a hash table (key → all matching
+/// left rows) on the entire left input on the first `next()`, then probes the
+/// right input one tuple at a time, fanning out one output row per matching
+/// left row — standard relational equi-join semantics, not restricted to
+/// unique keys on either side.
 public final class HashJoin: BinaryOperator, Operator {
     private let attrIndexLeft: Int
     private let attrIndexRight: Int
-    private var leftValues: [Register: [Register]] = [:]
+    private var leftValues: [Register: [[Register]]] = [:]
+    /// Left-side rows matching the right row currently being probed, and how
+    /// far through them `next()` has fanned out.
+    private var pendingMatches: [[Register]] = []
+    private var pendingIndex = 0
+    private var currentRightRow: [Register] = []
     private var output: [Register] = []
 
     public init(
@@ -414,21 +421,29 @@ public final class HashJoin: BinaryOperator, Operator {
     }
 
     public func next() -> Bool {
+        if pendingIndex < pendingMatches.count {
+            output = pendingMatches[pendingIndex] + currentRightRow
+            pendingIndex += 1
+            return true
+        }
+
         // Build phase: drain the left input on the first call. Subsequent
         // calls fall straight through (inputLeft.next() returns false).
         while inputLeft.next() {
             let row = inputLeft.getOutput()
             let key = row[attrIndexLeft].copy()
-            leftValues[key] = snapshot(row)
+            leftValues[key, default: []].append(snapshot(row))
         }
 
         while inputRight.next() {
             let row = inputRight.getOutput()
             let key = row[attrIndexRight]
-            if let leftRow = leftValues[key] {
-                output = leftRow + row
-                return true
-            }
+            guard let matches = leftValues[key], !matches.isEmpty else { continue }
+            currentRightRow = row
+            pendingMatches = matches
+            pendingIndex = 1
+            output = matches[0] + row
+            return true
         }
         return false
     }
@@ -437,6 +452,8 @@ public final class HashJoin: BinaryOperator, Operator {
         inputLeft.close()
         inputRight.close()
         leftValues.removeAll()
+        pendingMatches.removeAll()
+        pendingIndex = 0
         output.removeAll()
     }
 
@@ -484,7 +501,13 @@ public final class HashAggregation: UnaryOperator, Operator {
             let row = input.getOutput()
             let key = groupByAttrs.map { row[$0].copy() }
 
-            if aggrFuncs.isEmpty { continue }
+            if aggrFuncs.isEmpty {
+                // Pure `GROUP BY` with no aggregate functions is a dedup-by-
+                // group query — still record the key so it appears once in
+                // the output, just with no aggregate columns to compute.
+                if values[key] == nil { values[key] = [] }
+                continue
+            }
 
             let keyDidNotExist = (values[key] == nil)
             var group = values[key] ?? Array(repeating: Register(), count: aggrFuncs.count)

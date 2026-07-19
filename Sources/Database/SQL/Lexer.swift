@@ -1,8 +1,9 @@
 /// Hand-written SQL lexer. Recognises a small dialect: SELECT / FROM /
-/// WHERE / AND / NOT / TRUE / FALSE (case-insensitive), identifiers,
-/// integer / double / single- or double-quoted string literals, and the
-/// punctuation needed for the parser (`*`, `,`, `.`, `=`, `!=`, `(`, `)`,
-/// `;`). Whitespace is skipped; comments are not supported.
+/// WHERE / AND / NOT / TRUE / FALSE / ORDER / BY / GROUP / ASC / DESC /
+/// COUNT / SUM / MIN / MAX (case-insensitive), identifiers, integer / double /
+/// single- or double-quoted string literals, and the punctuation needed for
+/// the parser (`*`, `,`, `.`, `=`, `!=`, `<`, `<=`, `>`, `>=`, `(`, `)`, `;`).
+/// Whitespace is skipped; comments are not supported.
 public struct Lexer {
     private let source: [Character]
     private var index: Int = 0
@@ -50,6 +51,20 @@ public struct Lexer {
                 return TokenWithSpan(token: .notEqual, span: start)
             }
             throw SQLError.lex(start, "expected `=` after `!`")
+        case "<":
+            advance()
+            if peek() == "=" {
+                advance()
+                return TokenWithSpan(token: .lessEqual, span: start)
+            }
+            return TokenWithSpan(token: .less, span: start)
+        case ">":
+            advance()
+            if peek() == "=" {
+                advance()
+                return TokenWithSpan(token: .greaterEqual, span: start)
+            }
+            return TokenWithSpan(token: .greater, span: start)
         case "'", "\"":
             return TokenWithSpan(token: try readString(quote: c, start: start), span: start)
         default:
@@ -160,6 +175,10 @@ public struct Lexer {
         case "group": return .group
         case "asc": return .asc
         case "desc": return .desc
+        case "count": return .count
+        case "sum": return .sum
+        case "min": return .min
+        case "max": return .max
         case "union": return .union
         case "intersect": return .intersect
         case "except": return .except

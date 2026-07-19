@@ -15,6 +15,8 @@ public enum Token: Equatable, Sendable {
     case select, from, whereKW, and, not, trueKW, falseKW
     // Clause keywords.
     case order, by, group, asc, desc
+    // Aggregate function keywords.
+    case count, sum, min, max
     // Set-operator keywords.
     case union, intersect, except, all
     // DDL / DML keywords.
@@ -27,7 +29,7 @@ public enum Token: Equatable, Sendable {
     case doubleLit(Double)
     case stringLit(String)
     // Punctuation.
-    case star, comma, dot, equal, notEqual, lparen, rparen, semicolon
+    case star, comma, dot, equal, notEqual, less, lessEqual, greater, greaterEqual, lparen, rparen, semicolon
     // Terminators.
     case eof
 }

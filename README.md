@@ -84,7 +84,7 @@ Just open a directory — there is no separate "init" step.
 ```sql
 CREATE TABLE users (id INTEGER, name CHAR(16), PRIMARY KEY (id));
 ```
-Columns are typed `INTEGER` or `CHAR(n)`. A single-column `PRIMARY KEY` is automatically given a unique index.
+Columns are typed `INTEGER`, `CHAR(n)`, `DOUBLE`, or `BOOL`. A single-column `PRIMARY KEY` is automatically given a unique index (only `INTEGER`/`CHAR` primary keys are indexable).
 
 - **Behind it:** parsed into `CreateTableAST` (`SQL/Statement.swift`); the column types are `SchemaType` (`SlottedPages/Schema.swift`); the table is registered in `Schema` and gets its own `SPSegment` for row storage. A single-column PK auto-creates a `BTree`-backed index.
 
@@ -114,15 +114,26 @@ COPY users FROM 'people.csv' CSV HEADER;
 ```sql
 SELECT name FROM users WHERE id = 1;
 SELECT u.name, o.total FROM users u, orders o WHERE u.id = o.user_id AND o.total = 100;
+SELECT name FROM users WHERE age >= 18 AND age != 30;
 ```
-List one or more tables in `FROM`; `WHERE` predicates are equalities (`=`) joined by `AND`. An `attr = constant` is a **filter**; an `attr = attr` across two tables is an **equi-join**. `SELECT *` projects everything.
+List one or more tables in `FROM`; `WHERE` predicates use `=`, `!=`, `<`, `<=`, `>`, `>=`, joined by `AND`. An `attr = attr` across two tables is an **equi-join** (any other operator between two attrs is a post-join filter, not a join condition); anything against a constant is a **filter**. `SELECT *` projects everything.
 
 - **Behind it:** `SemanticAnalysis` (`SQL/SemanticAnalysis.swift`) resolves names/types against the `Schema`; `Planner` (`SQL/Planner.swift`) lowers it to an operator tree:
-  - leaf scans are `TableScan`, or `IndexScan` + `TIDResolve` when a filter hits an indexed column (see below),
+  - leaf scans are `TableScan`, or `IndexScan` + `TIDResolve` when an equality filter hits an indexed column (see below) — indexes only support point lookups, so other operators always fall back to scanning,
   - `attr = attr` predicates become `HashJoin` (or `CrossProduct` when no join condition connects two tables),
-  - `attr = constant` predicates become `Select`,
+  - every other predicate becomes `Select`,
   - the column list becomes `Projection`,
   - `Print` renders the rows the CLI prints.
+
+### `GROUP BY`, aggregates, and `ORDER BY`
+```sql
+SELECT dept, COUNT(*), SUM(salary) FROM employees GROUP BY dept ORDER BY dept;
+SELECT name FROM users ORDER BY name DESC;
+SELECT name FROM users ORDER BY 1;
+```
+Aggregate functions are `COUNT(*)`, `COUNT(col)`, `SUM(col)`, `MIN(col)`, `MAX(col)`. Every plain column in the SELECT list must appear in `GROUP BY` when the query groups or aggregates. `ORDER BY` takes a column name or a 1-based SELECT-list position, each with an optional `ASC`/`DESC`.
+
+- **Behind it:** `Planner` wires in `HashAggregation` when the query groups or projects an aggregate, and `Sort` when it orders — both operators (`Operators/Operators.swift`) already existed and were fully tested before the SQL front-end could reach them.
 
 ### Automatic index use
 If you filter on an indexed column with equality, the planner uses the index instead of scanning the whole table — no special syntax needed.
@@ -145,8 +156,6 @@ DROP TABLE users;
 ```
 
 - **Behind it:** removes the table and its indexes from the `Schema` and re-persists the catalog via `Database.persistSchema`.
-
-> **Engine vs. SQL surface.** The execution engine also includes `Sort` (backed by the on-disk `ExternalSort` + `SortSpillover`) and `HashAggregation` operators. These are fully implemented and tested at the operator level, but the SQL grammar above does not yet expose `ORDER BY` / `GROUP BY` — a good first feature to add if you want to extend the front-end.
 
 ---
 

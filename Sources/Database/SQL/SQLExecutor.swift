@@ -107,14 +107,34 @@ public struct SQLExecutor {
                 rendered.append(String(v))
             case (.string(let v), .char):
                 rendered.append(v)
+            case (.double(let v), .double):
+                rendered.append(String(v))
+            case (.bool(let v), .bool):
+                rendered.append(v ? "true" : "false")
             case (.int(let v), .char):
                 throw SQLError.bind("column `\(col.id)` is char but value is integer `\(v)`")
             case (.string(let v), .integer):
                 throw SQLError.bind("column `\(col.id)` is integer but value is string `\(v)`")
-            case (.double(let v), _):
-                throw SQLError.bind("double literal `\(v)` is not yet supported for stored columns")
-            case (.bool(let v), _):
-                throw SQLError.bind("bool literal `\(v)` is not yet supported for stored columns")
+            case (.int(let v), .double):
+                throw SQLError.bind("column `\(col.id)` is double but value is integer `\(v)`")
+            case (.string(let v), .double):
+                throw SQLError.bind("column `\(col.id)` is double but value is string `\(v)`")
+            case (.bool(let v), .double):
+                throw SQLError.bind("column `\(col.id)` is double but value is bool `\(v)`")
+            case (.int(let v), .bool):
+                throw SQLError.bind("column `\(col.id)` is bool but value is integer `\(v)`")
+            case (.string(let v), .bool):
+                throw SQLError.bind("column `\(col.id)` is bool but value is string `\(v)`")
+            case (.double(let v), .bool):
+                throw SQLError.bind("column `\(col.id)` is bool but value is double `\(v)`")
+            case (.double(let v), .integer):
+                throw SQLError.bind("column `\(col.id)` is integer but value is double `\(v)`")
+            case (.bool(let v), .integer):
+                throw SQLError.bind("column `\(col.id)` is integer but value is bool `\(v)`")
+            case (.bool(let v), .char):
+                throw SQLError.bind("column `\(col.id)` is char but value is bool `\(v)`")
+            case (.double(let v), .char):
+                throw SQLError.bind("column `\(col.id)` is char but value is double `\(v)`")
             }
         }
         _ = try db.insert(table: table, values: rendered)

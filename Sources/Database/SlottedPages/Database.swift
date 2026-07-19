@@ -192,6 +192,11 @@ public final class Database {
                 for j in 0..<length {
                     buffer.append(j < chars.count ? chars[j] : 0x00)  // NUL fill
                 }
+            case .double:
+                let doubleValue = Double(s) ?? 0
+                withUnsafeBytes(of: doubleValue) { buffer.append(contentsOf: $0) }
+            case .bool:
+                buffer.append(s == "true" ? 1 : 0)
             }
         }
 
@@ -238,6 +243,15 @@ public final class Database {
                 while end < fieldEnd && readBuffer[end] != 0 { end += 1 }
                 out.append(String(decoding: readBuffer[cursor..<end], as: UTF8.self))
                 cursor += length
+            case .double:
+                if cursor + 8 > Int(read) { return out }
+                let v = readBuffer.withUnsafeBytes { $0.load(fromByteOffset: cursor, as: Double.self) }
+                out.append(String(v))
+                cursor += 8
+            case .bool:
+                if cursor + 1 > Int(read) { return out }
+                out.append(readBuffer[cursor] != 0 ? "true" : "false")
+                cursor += 1
             }
         }
         return out

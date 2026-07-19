@@ -49,6 +49,13 @@ public struct QueryAST: Equatable, Sendable {
         case bool(Bool)
     }
 
+    /// Comparison operator carried by a WHERE predicate. Kept independent of
+    /// `Operators.Select.PredicateType` — `SemanticAnalysis`/`QueryAST` don't
+    /// build operators, that's the planner's job.
+    public enum ComparisonOp: Equatable, Sendable {
+        case eq, ne, lt, le, gt, ge
+    }
+
     /// Aggregate functions exposed by `GROUP BY`. `count` also serves
     /// `COUNT(*)` (see `SelectItem.aggregate` with a nil argument).
     public enum AggregateFunction: Equatable, Sendable {
@@ -80,8 +87,14 @@ public struct QueryAST: Equatable, Sendable {
     public let relations: [Relation]
     /// Empty `projections` means `SELECT *` (pass-through identity).
     public let projections: [SelectItem]
-    public let selections: [(AttrRef, Literal)]
+    public let selections: [(AttrRef, ComparisonOp, Literal)]
+    /// Equality attr-attr predicates only — these are what the planner treats
+    /// as hash-joinable. Non-equality attr-attr predicates go in
+    /// `attrComparisons` instead.
     public let joins: [(AttrRef, AttrRef)]
+    /// Non-equality attr-attr predicates (`a.x < b.y`, etc.); always realised
+    /// as a post-join `Select` filter, never as a `HashJoin` condition.
+    public let attrComparisons: [(AttrRef, ComparisonOp, AttrRef)]
     /// `GROUP BY` columns (empty = no explicit grouping).
     public let groupBy: [AttrRef]
     /// `ORDER BY` terms (empty = unordered).
@@ -90,8 +103,9 @@ public struct QueryAST: Equatable, Sendable {
     public init(
         relations: [Relation],
         projections: [SelectItem],
-        selections: [(AttrRef, Literal)],
+        selections: [(AttrRef, ComparisonOp, Literal)],
         joins: [(AttrRef, AttrRef)],
+        attrComparisons: [(AttrRef, ComparisonOp, AttrRef)] = [],
         groupBy: [AttrRef] = [],
         orderBy: [OrderItem] = []
     ) {
@@ -99,6 +113,7 @@ public struct QueryAST: Equatable, Sendable {
         self.projections = projections
         self.selections = selections
         self.joins = joins
+        self.attrComparisons = attrComparisons
         self.groupBy = groupBy
         self.orderBy = orderBy
     }
@@ -109,10 +124,16 @@ public struct QueryAST: Equatable, Sendable {
             lhs.groupBy == rhs.groupBy,
             lhs.orderBy == rhs.orderBy,
             lhs.selections.count == rhs.selections.count,
-            lhs.joins.count == rhs.joins.count
+            lhs.joins.count == rhs.joins.count,
+            lhs.attrComparisons.count == rhs.attrComparisons.count
         else { return false }
-        for (a, b) in zip(lhs.selections, rhs.selections) where a.0 != b.0 || a.1 != b.1 { return false }
+        for (a, b) in zip(lhs.selections, rhs.selections) where a.0 != b.0 || a.1 != b.1 || a.2 != b.2 {
+            return false
+        }
         for (a, b) in zip(lhs.joins, rhs.joins) where a.0 != b.0 || a.1 != b.1 { return false }
+        for (a, b) in zip(lhs.attrComparisons, rhs.attrComparisons) where a.0 != b.0 || a.1 != b.1 || a.2 != b.2 {
+            return false
+        }
         return true
     }
 }

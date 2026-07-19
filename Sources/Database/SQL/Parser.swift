@@ -2,14 +2,20 @@
 ///
 /// Grammar:
 /// ```
-/// query    ::= 'select' projList 'from' relList ('where' predList)? ';'?
-/// projList ::= '*' | attrRef (',' attrRef)*
+/// query    ::= 'select' projList 'from' relList ('where' predList)?
+///              ('group' 'by' attrRef (',' attrRef)*)?
+///              ('order' 'by' orderItem (',' orderItem)*)? ';'?
+/// projList ::= '*' | selectItem (',' selectItem)*
+/// selectItem ::= aggCall | attrRef
+/// aggCall  ::= ('count'|'sum'|'min'|'max') '(' ('*' | attrRef) ')'
 /// relList  ::= relation (',' relation)*
 /// relation ::= IDENT (IDENT)?            -- table + optional alias
 /// attrRef  ::= IDENT ('.' IDENT)?
 /// predList ::= pred ('and' pred)*
-/// pred     ::= attrRef '=' (attrRef | literal)
+/// pred     ::= attrRef compOp (attrRef | literal)
+/// compOp   ::= '=' | '!=' | '<' | '<=' | '>' | '>='
 /// literal  ::= INTEGER | DOUBLE | STRING | 'true' | 'false'
+/// orderItem ::= (INTEGER | attrRef) ('asc' | 'desc')?
 /// ```
 public struct Parser {
     private let tokens: [TokenWithSpan]
@@ -98,19 +104,65 @@ public struct Parser {
         try expect(.from)
         let relations = try parseRelationList()
 
-        var selections: [(QueryAST.AttrRef, QueryAST.Literal)] = []
+        var selections: [(QueryAST.AttrRef, QueryAST.ComparisonOp, QueryAST.Literal)] = []
         var joins: [(QueryAST.AttrRef, QueryAST.AttrRef)] = []
+        var attrComparisons: [(QueryAST.AttrRef, QueryAST.ComparisonOp, QueryAST.AttrRef)] = []
 
         if peek().token == .whereKW {
             advance()
-            try parsePredicateList(into: &selections, joins: &joins)
+            try parsePredicateList(into: &selections, joins: &joins, attrComparisons: &attrComparisons)
         }
+
+        var groupBy: [QueryAST.AttrRef] = []
+        if peek().token == .group {
+            advance()
+            try expect(.by)
+            groupBy.append(try parseAttrRef())
+            while peek().token == .comma {
+                advance()
+                groupBy.append(try parseAttrRef())
+            }
+        }
+
+        var orderBy: [QueryAST.OrderItem] = []
+        if peek().token == .order {
+            advance()
+            try expect(.by)
+            orderBy.append(try parseOrderItem())
+            while peek().token == .comma {
+                advance()
+                orderBy.append(try parseOrderItem())
+            }
+        }
+
         return QueryAST(
             relations: relations,
             projections: projections,
             selections: selections,
-            joins: joins
+            joins: joins,
+            attrComparisons: attrComparisons,
+            groupBy: groupBy,
+            orderBy: orderBy
         )
+    }
+
+    /// `orderItem ::= (INTEGER | attrRef) ('asc' | 'desc')?`
+    private mutating func parseOrderItem() throws -> QueryAST.OrderItem {
+        let key: QueryAST.OrderItem.Key
+        if case .integerLit(let v) = peek().token {
+            advance()
+            key = .position(Int(v))
+        } else {
+            key = .name(try parseAttrRef())
+        }
+        var descending = false
+        if peek().token == .asc {
+            advance()
+        } else if peek().token == .desc {
+            advance()
+            descending = true
+        }
+        return QueryAST.OrderItem(key: key, descending: descending)
     }
 
     // MARK: - CREATE TABLE
@@ -193,6 +245,10 @@ public struct Parser {
                 throw SQLError.parse(name.span, "char length out of range")
             }
             return CreateTableAST.Column(name: name.name, type: .char(length: UInt32(length)))
+        case "double":
+            return CreateTableAST.Column(name: name.name, type: .double)
+        case "bool", "boolean":
+            return CreateTableAST.Column(name: name.name, type: .bool)
         default:
             throw SQLError.parse(typeIdent.span, "unknown column type `\(typeIdent.name)`")
         }
@@ -284,12 +340,42 @@ public struct Parser {
             return []
         }
         var out: [QueryAST.SelectItem] = []
-        out.append(.column(try parseAttrRef()))
+        out.append(try parseSelectItem())
         while peek().token == .comma {
             advance()
-            out.append(.column(try parseAttrRef()))
+            out.append(try parseSelectItem())
         }
         return out
+    }
+
+    /// `selectItem ::= aggCall | attrRef`
+    private mutating func parseSelectItem() throws -> QueryAST.SelectItem {
+        if let fn = Self.aggregateFunction(for: peek().token), peek(offset: 1).token == .lparen {
+            advance()  // aggregate keyword
+            advance()  // '('
+            if peek().token == .star {
+                advance()
+                try expect(.rparen)
+                guard fn == .count else {
+                    throw SQLError.parse(peek().span, "`*` is only valid inside COUNT(...)")
+                }
+                return .aggregate(function: fn, arg: nil)
+            }
+            let arg = try parseAttrRef()
+            try expect(.rparen)
+            return .aggregate(function: fn, arg: arg)
+        }
+        return .column(try parseAttrRef())
+    }
+
+    private static func aggregateFunction(for token: Token) -> QueryAST.AggregateFunction? {
+        switch token {
+        case .count: return .count
+        case .sum: return .sum
+        case .min: return .min
+        case .max: return .max
+        default: return nil
+        }
     }
 
     private mutating func parseRelationList() throws -> [QueryAST.Relation] {
@@ -324,44 +410,66 @@ public struct Parser {
     }
 
     private mutating func parsePredicateList(
-        into selections: inout [(QueryAST.AttrRef, QueryAST.Literal)],
-        joins: inout [(QueryAST.AttrRef, QueryAST.AttrRef)]
+        into selections: inout [(QueryAST.AttrRef, QueryAST.ComparisonOp, QueryAST.Literal)],
+        joins: inout [(QueryAST.AttrRef, QueryAST.AttrRef)],
+        attrComparisons: inout [(QueryAST.AttrRef, QueryAST.ComparisonOp, QueryAST.AttrRef)]
     ) throws {
-        try parsePredicate(into: &selections, joins: &joins)
+        try parsePredicate(into: &selections, joins: &joins, attrComparisons: &attrComparisons)
         while peek().token == .and {
             advance()
-            try parsePredicate(into: &selections, joins: &joins)
+            try parsePredicate(into: &selections, joins: &joins, attrComparisons: &attrComparisons)
+        }
+    }
+
+    /// `compOp ::= '=' | '!=' | '<' | '<=' | '>' | '>='`
+    private mutating func parseComparisonOp() throws -> QueryAST.ComparisonOp {
+        switch peek().token {
+        case .equal: advance(); return .eq
+        case .notEqual: advance(); return .ne
+        case .less: advance(); return .lt
+        case .lessEqual: advance(); return .le
+        case .greater: advance(); return .gt
+        case .greaterEqual: advance(); return .ge
+        default:
+            throw SQLError.parse(peek().span, "expected a comparison operator (=, !=, <, <=, >, >=)")
         }
     }
 
     private mutating func parsePredicate(
-        into selections: inout [(QueryAST.AttrRef, QueryAST.Literal)],
-        joins: inout [(QueryAST.AttrRef, QueryAST.AttrRef)]
+        into selections: inout [(QueryAST.AttrRef, QueryAST.ComparisonOp, QueryAST.Literal)],
+        joins: inout [(QueryAST.AttrRef, QueryAST.AttrRef)],
+        attrComparisons: inout [(QueryAST.AttrRef, QueryAST.ComparisonOp, QueryAST.AttrRef)]
     ) throws {
         let lhs = try parseAttrRef()
-        try expect(.equal)
-        // RHS may be another attr ref (join) or a literal (selection).
+        let op = try parseComparisonOp()
+        // RHS may be another attr ref (join / attr comparison) or a literal
+        // (selection). Only `=` between two attrs is hash-joinable; other
+        // operators between two attrs become a post-join filter.
         switch peek().token {
         case .identifier:
             let rhs = try parseAttrRef()
-            joins.append((lhs, rhs))
+            if op == .eq {
+                joins.append((lhs, rhs))
+            } else {
+                attrComparisons.append((lhs, op, rhs))
+            }
         case .integerLit(let v):
             advance()
-            selections.append((lhs, .int(v)))
+            selections.append((lhs, op, .int(v)))
         case .doubleLit(let v):
             advance()
-            selections.append((lhs, .double(v)))
+            selections.append((lhs, op, .double(v)))
         case .stringLit(let v):
             advance()
-            selections.append((lhs, .string(v)))
+            selections.append((lhs, op, .string(v)))
         case .trueKW:
             advance()
-            selections.append((lhs, .bool(true)))
+            selections.append((lhs, op, .bool(true)))
         case .falseKW:
             advance()
-            selections.append((lhs, .bool(false)))
+            selections.append((lhs, op, .bool(false)))
         default:
-            throw SQLError.parse(peek().span, "expected attribute or literal after `=`")
+            throw SQLError.parse(peek().span, "expected attribute or literal after comparison operator")
         }
     }
 
@@ -406,6 +514,10 @@ public struct Parser {
         case .group: return "GROUP"
         case .asc: return "ASC"
         case .desc: return "DESC"
+        case .count: return "COUNT"
+        case .sum: return "SUM"
+        case .min: return "MIN"
+        case .max: return "MAX"
         case .trueKW: return "TRUE"
         case .falseKW: return "FALSE"
         case .union: return "UNION"
@@ -434,6 +546,10 @@ public struct Parser {
         case .dot: return "."
         case .equal: return "="
         case .notEqual: return "!="
+        case .less: return "<"
+        case .lessEqual: return "<="
+        case .greater: return ">"
+        case .greaterEqual: return ">="
         case .lparen: return "("
         case .rparen: return ")"
         case .semicolon: return ";"

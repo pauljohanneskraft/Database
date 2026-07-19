@@ -210,32 +210,41 @@ struct IndexSuite {
     }
 
     @Test func indexSurvivesReopen() throws {
-        let dir = freshDir()
-        defer { try? FileManager.default.removeItem(at: dir) }
+        // `Database.create`/`.open(directory:)` chdir internally (segment
+        // files are written relative to cwd) behind their own `CWDGuard.lock`
+        // — a *different* lock from `TestSupport.chdirLock`. Every other test
+        // in the suite serialises chdir through `withTempCwd`; without doing
+        // the same here, this test's chdir races against all of them (Swift
+        // Testing parallelises across suites even though `IndexSuite` itself
+        // is `.serialized`), corrupting whichever directory wins the race.
+        try TestSupport.withTempCwd {
+            let dir = freshDir()
+            defer { try? FileManager.default.removeItem(at: dir) }
 
-        // Phase 1: create, populate, close (deinit persists schema + index).
-        do {
-            let db = try Database.create(directory: dir, pageSize: 1024, pageCount: 64)
-            let exec = SQLExecutor(db: db)
-            _ = try exec.execute("CREATE TABLE t (a INT, b CHAR(8), PRIMARY KEY (a));")
-            for i in 0..<50 {
-                _ = try exec.execute("INSERT INTO t VALUES (\(i), 'r\(i)');")
+            // Phase 1: create, populate, close (deinit persists schema + index).
+            do {
+                let db = try Database.create(directory: dir, pageSize: 1024, pageCount: 64)
+                let exec = SQLExecutor(db: db)
+                _ = try exec.execute("CREATE TABLE t (a INT, b CHAR(8), PRIMARY KEY (a));")
+                for i in 0..<50 {
+                    _ = try exec.execute("INSERT INTO t VALUES (\(i), 'r\(i)');")
+                }
             }
-        }
 
-        // Phase 2: reopen and confirm the index metadata + contents survived.
-        do {
-            let db = try Database.open(directory: dir, pageSize: 1024, pageCount: 64)
-            let metas = db.schema!.indexes
-            #expect(metas.count == 1)
-            let meta = metas[0]
-            #expect(meta.name == "pk_t")
-            let live = db.indexes[meta.segmentId]
-            // Every key inserted before close resolves to a TID after reopen.
-            for i in 0..<50 {
-                #expect(try live?.lookupTID(columnValue: "\(i)") != nil, "missing key \(i)")
+            // Phase 2: reopen and confirm the index metadata + contents survived.
+            do {
+                let db = try Database.open(directory: dir, pageSize: 1024, pageCount: 64)
+                let metas = db.schema!.indexes
+                #expect(metas.count == 1)
+                let meta = metas[0]
+                #expect(meta.name == "pk_t")
+                let live = db.indexes[meta.segmentId]
+                // Every key inserted before close resolves to a TID after reopen.
+                for i in 0..<50 {
+                    #expect(try live?.lookupTID(columnValue: "\(i)") != nil, "missing key \(i)")
+                }
+                #expect(try live?.lookupTID(columnValue: "999") == nil)
             }
-            #expect(try live?.lookupTID(columnValue: "999") == nil)
         }
     }
 }

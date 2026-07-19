@@ -5,6 +5,7 @@
 /// from `Database.insert`) and widened to `Int64` for the `Register`. Char
 /// columns occupy their full declared width on disk; the content runs up to the
 /// first NUL fill byte and is stored as the `Register`'s variable-length string.
+/// Doubles are 8 raw bytes; bools are a single 0/1 byte.
 ///
 /// Output register identities are stable across `open()`/`next()` cycles:
 /// each output slot is constructed once in `open()`, then mutated in place
@@ -61,6 +62,15 @@ public final class TableScan: Operator {
                 while end < fieldEnd && readBuffer[end] != 0 { end += 1 }
                 output[i].setString(String(decoding: readBuffer[cursor..<end], as: UTF8.self))
                 cursor += length
+            case .double:
+                if cursor + 8 > Int(bytesRead) { return false }
+                let v = readBuffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cursor, as: Double.self) }
+                output[i].setDouble(v)
+                cursor += 8
+            case .bool:
+                if cursor + 1 > Int(bytesRead) { return false }
+                output[i].setBool(readBuffer[cursor] != 0)
+                cursor += 1
             }
         }
         return true

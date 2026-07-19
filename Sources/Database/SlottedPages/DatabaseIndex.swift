@@ -151,6 +151,7 @@ extension Database {
         switch column.type.tclass {
         case .integer: keyKind = .int64
         case .char: keyKind = .char16
+        case .double, .bool: throw DatabaseError.invalidData
         }
 
         let segmentId = allocateIndexSegmentId()
