@@ -117,6 +117,17 @@ public final class Register: @unchecked Sendable {
         self.storage = other.storage
         self.stringStorage = other.stringStorage
     }
+
+    /// Overwrites this register's value with a tuple-decoder result, routing
+    /// to the matching typed setter.
+    func assign(from value: DecodedTupleValue) {
+        switch value {
+        case .int(let v): setInt(v)
+        case .string(let v): setString(v)
+        case .double(let v): setDouble(v)
+        case .bool(let v): setBool(v)
+        }
+    }
 }
 
 extension Register: Hashable {

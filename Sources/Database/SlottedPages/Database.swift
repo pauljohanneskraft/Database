@@ -235,32 +235,12 @@ public final class Database {
         }
 
         var out: [String] = []
-        var cursor = 0
-        for column in table.columns {
-            switch column.type.tclass {
-            case .integer:
-                if cursor + 4 > Int(read) { return out }
-                let v = readBuffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cursor, as: Int32.self) }
-                out.append(String(v))
-                cursor += 4
-            case .char:
-                let length = Int(column.type.length)
-                if cursor + length > Int(read) { return out }
-                // Content runs up to the first NUL fill byte, or the whole field.
-                var end = cursor
-                let fieldEnd = cursor + length
-                while end < fieldEnd && readBuffer[end] != 0 { end += 1 }
-                out.append(String(decoding: readBuffer[cursor..<end], as: UTF8.self))
-                cursor += length
-            case .double:
-                if cursor + 8 > Int(read) { return out }
-                let v = readBuffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cursor, as: Double.self) }
-                out.append(String(v))
-                cursor += 8
-            case .bool:
-                if cursor + 1 > Int(read) { return out }
-                out.append(readBuffer[cursor] != 0 ? "true" : "false")
-                cursor += 1
+        _ = decodeTuple(columns: table.columns, buffer: readBuffer, bytesRead: Int(read)) { _, value in
+            switch value {
+            case .int(let v): out.append(String(v))
+            case .string(let v): out.append(v)
+            case .double(let v): out.append(String(v))
+            case .bool(let v): out.append(v ? "true" : "false")
             }
         }
         return out

@@ -48,6 +48,8 @@ public struct BoundQuery {
     public let groupBy: [BoundAttr]
     /// `ORDER BY` terms (empty = unordered).
     public let orderBy: [BoundOrderItem]
+    /// Whether the query groups explicitly or projects any aggregate call.
+    public let hasAggregation: Bool
 }
 
 /// A bound `SelectExpr`: each leaf is a `BoundQuery`, interior nodes are set
@@ -247,7 +249,8 @@ public struct SemanticAnalysis {
             joins: joins,
             attrComparisons: attrComparisons,
             groupBy: groupBy,
-            orderBy: orderBy
+            orderBy: orderBy,
+            hasAggregation: hasAggregation
         )
     }
 
@@ -303,36 +306,37 @@ public struct SemanticAnalysis {
         _ lit: QueryAST.Literal,
         attr: BoundQuery.BoundAttr
     ) throws {
+        let compatible: Bool
         switch (lit, attr.type.tclass) {
-        case (.int, .integer): return
-        case (.string, .char): return
-        case (.double, .double): return
-        case (.bool, .bool): return
-        case (.double, .integer):
-            throw SQLError.bind("attribute `\(attr.name)` is integer but literal is a double")
-        case (.string, .integer):
-            throw SQLError.bind("attribute `\(attr.name)` is integer but literal is a string")
-        case (.bool, .integer):
-            throw SQLError.bind("attribute `\(attr.name)` is integer but literal is a bool")
-        case (.int, .char):
-            throw SQLError.bind("attribute `\(attr.name)` is char but literal is an integer")
-        case (.double, .char):
-            throw SQLError.bind("attribute `\(attr.name)` is char but literal is a double")
-        case (.bool, .char):
-            throw SQLError.bind("attribute `\(attr.name)` is char but literal is a bool")
-        case (.int, .double):
-            throw SQLError.bind("attribute `\(attr.name)` is double but literal is an integer")
-        case (.string, .double):
-            throw SQLError.bind("attribute `\(attr.name)` is double but literal is a string")
-        case (.bool, .double):
-            throw SQLError.bind("attribute `\(attr.name)` is double but literal is a bool")
-        case (.int, .bool):
-            throw SQLError.bind("attribute `\(attr.name)` is bool but literal is an integer")
-        case (.string, .bool):
-            throw SQLError.bind("attribute `\(attr.name)` is bool but literal is a string")
-        case (.double, .bool):
-            throw SQLError.bind("attribute `\(attr.name)` is bool but literal is a double")
+        case (.int, .integer), (.string, .char), (.double, .double), (.bool, .bool):
+            compatible = true
+        default:
+            compatible = false
         }
+        guard compatible else {
+            let literalTypeName = Self.literalTypeName(lit)
+            throw SQLError.bind(
+                "attribute `\(attr.name)` is \(attr.type.name) but literal is "
+                    + "\(Self.article(for: literalTypeName)) \(literalTypeName)"
+            )
+        }
+    }
+
+    /// The SQL-facing type name of a literal, for diagnostics — matches the
+    /// vocabulary used by `SchemaType.name` (e.g. "integer" for both).
+    private static func literalTypeName(_ lit: QueryAST.Literal) -> String {
+        switch lit {
+        case .int: return "integer"
+        case .double: return "double"
+        case .string: return "string"
+        case .bool: return "bool"
+        }
+    }
+
+    /// "a" or "an", chosen by whether `word` starts with a vowel.
+    private static func article(for word: String) -> String {
+        guard let first = word.first else { return "a" }
+        return "aeiou".contains(first) ? "an" : "a"
     }
 
     private static func columnsCompatible(_ a: SchemaType, _ b: SchemaType) -> Bool {

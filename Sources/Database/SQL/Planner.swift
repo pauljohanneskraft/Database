@@ -102,22 +102,11 @@ public struct Planner {
             currentWidth += rel.table.columns.count
         }
 
-        // Remaining join conditions → attr-attr filters (always equality).
-        for (l, r) in remainingJoins {
-            let lSlot = slotMap[SlotKey(l.scanIndex, l.columnIndex)]!
-            let rSlot = slotMap[SlotKey(r.scanIndex, r.columnIndex)]!
-            op = Select(
-                input: op,
-                predicate: Select.PredicateAttributeAttribute(
-                    attrLeftIndex: lSlot,
-                    attrRightIndex: rSlot,
-                    predicateType: .eq
-                )
-            )
-        }
-
-        // Non-equality attr-attr comparisons → filters.
-        for (l, cmpOp, r) in query.attrComparisons {
+        // Remaining join conditions (always equality) plus non-equality
+        // attr-attr comparisons both become attr-attr `Select` filters.
+        let attrFilters: [(BoundQuery.BoundAttr, QueryAST.ComparisonOp, BoundQuery.BoundAttr)] =
+            remainingJoins.map { ($0.0, .eq, $0.1) } + query.attrComparisons
+        for (l, cmpOp, r) in attrFilters {
             let lSlot = slotMap[SlotKey(l.scanIndex, l.columnIndex)]!
             let rSlot = slotMap[SlotKey(r.scanIndex, r.columnIndex)]!
             op = Select(
@@ -141,12 +130,7 @@ public struct Planner {
         // followed by aggregate results, in that order" — `postAgg*` below
         // resolve attributes/projection-list positions against whichever
         // shape is current.
-        let hasAggregation =
-            !query.groupBy.isEmpty
-            || query.projections.contains {
-                if case .aggregate = $0 { return true }
-                return false
-            }
+        let hasAggregation = query.hasAggregation
 
         var postAggAttrSlot: ((BoundQuery.BoundAttr) -> Int)?
         var postAggProjIndexSlot: ((Int) -> Int)?
