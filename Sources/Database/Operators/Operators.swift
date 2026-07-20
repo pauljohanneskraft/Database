@@ -468,9 +468,16 @@ public final class HashAggregation: UnaryOperator, Operator {
         public enum Function: Sendable { case min, max, sum, count }
         public let function: Function
         public let attrIndex: Int
-        public init(function: Function, attrIndex: Int) {
+        /// Value to emit for this aggregate when the (ungrouped) input has
+        /// zero rows — well-defined only for `.count`/`.sum` (identity
+        /// element `0`). `.min`/`.max` would need NULL, which `Register`
+        /// doesn't represent, so leaving this `nil` keeps today's "no output
+        /// row" behavior for a query containing a `.min`/`.max`.
+        public let emptyResult: Register?
+        public init(function: Function, attrIndex: Int, emptyResult: Register? = nil) {
             self.function = function
             self.attrIndex = attrIndex
+            self.emptyResult = emptyResult
         }
     }
 
@@ -505,7 +512,7 @@ public final class HashAggregation: UnaryOperator, Operator {
                 // Pure `GROUP BY` with no aggregate functions is a dedup-by-
                 // group query — still record the key so it appears once in
                 // the output, just with no aggregate columns to compute.
-                if values[key] == nil { values[key] = [] }
+                values[key] = []
                 continue
             }
 
@@ -516,10 +523,13 @@ public final class HashAggregation: UnaryOperator, Operator {
                 let attr = row[fn.attrIndex]
                 switch fn.function {
                 case .sum:
-                    group[i] =
-                        keyDidNotExist
-                        ? attr.copy()
-                        : Register.from(int: group[i].asInt &+ attr.asInt)
+                    if keyDidNotExist {
+                        group[i] = attr.copy()
+                    } else if attr.kind == .double {
+                        group[i] = Register.from(double: group[i].asDouble + attr.asDouble)
+                    } else {
+                        group[i] = Register.from(int: group[i].asInt &+ attr.asInt)
+                    }
                 case .count:
                     group[i] =
                         keyDidNotExist
@@ -541,6 +551,19 @@ public final class HashAggregation: UnaryOperator, Operator {
 
         for (key, group) in values {
             output.append(key + group)
+        }
+
+        // An ungrouped aggregate (no GROUP BY) over zero input rows must
+        // still emit exactly one row per SQL semantics (e.g. `COUNT(*)` = 0)
+        // — unlike the grouped case (0 groups → 0 rows, which is already
+        // correct). Only synthesize that row when every aggregate has a
+        // well-defined zero-row value; a `.min`/`.max` in the mix leaves
+        // `output` empty, matching today's behavior.
+        if output.isEmpty, groupByAttrs.isEmpty, !aggrFuncs.isEmpty {
+            let emptyResults = aggrFuncs.compactMap(\.emptyResult)
+            if emptyResults.count == aggrFuncs.count {
+                output.append(emptyResults)
+            }
         }
 
         return !output.isEmpty

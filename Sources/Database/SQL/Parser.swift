@@ -368,12 +368,18 @@ public struct Parser {
         return .column(try parseAttrRef())
     }
 
+    /// `count`/`sum`/`min`/`max` aren't keywords (see `Lexer`) — they lex as
+    /// plain identifiers so pre-existing schemas/queries can still use them
+    /// as column/table names. An identifier only becomes an aggregate call
+    /// here, contextually, when the caller has also checked it's followed by
+    /// `(` (see `parseSelectItem`).
     private static func aggregateFunction(for token: Token) -> QueryAST.AggregateFunction? {
-        switch token {
-        case .count: return .count
-        case .sum: return .sum
-        case .min: return .min
-        case .max: return .max
+        guard case .identifier(let name) = token else { return nil }
+        switch name.lowercased() {
+        case "count": return .count
+        case "sum": return .sum
+        case "min": return .min
+        case "max": return .max
         default: return nil
         }
     }
@@ -514,10 +520,6 @@ public struct Parser {
         case .group: return "GROUP"
         case .asc: return "ASC"
         case .desc: return "DESC"
-        case .count: return "COUNT"
-        case .sum: return "SUM"
-        case .min: return "MIN"
-        case .max: return "MAX"
         case .trueKW: return "TRUE"
         case .falseKW: return "FALSE"
         case .union: return "UNION"

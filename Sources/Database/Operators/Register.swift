@@ -123,8 +123,12 @@ extension Register: Hashable {
     public func hash(into hasher: inout Hasher) {
         hasher.combine(kind)
         switch kind {
-        case .int64, .double, .bool:
+        case .int64, .bool:
             hasher.combine(storage.0)
+        case .double:
+            // Hash the value, not the bit pattern — `==` treats `0.0` and
+            // `-0.0` as equal (IEEE-754), so they must hash equally too.
+            hasher.combine(asDouble)
         case .char16:
             hasher.combine(stringStorage)
         }

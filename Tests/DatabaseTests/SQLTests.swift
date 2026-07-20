@@ -474,6 +474,97 @@ struct SQLSuite {
         }
     }
 
+    @Test func endToEndSumOnDoubleColumn() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table sales (dept char(8), price double);", on: db)
+            try Self.execute("insert into sales values ('eng', 3.5);", on: db)
+            try Self.execute("insert into sales values ('eng', 9.25);", on: db)
+
+            let out = try Self.execute("select dept, sum(price) from sales group by dept;", on: db)
+            #expect(out == "eng,12.75\n")
+        }
+    }
+
+    @Test func sumRejectsNonNumericColumn() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (dept char(8));", on: db)
+
+            #expect(throws: SQLError.self) {
+                try Self.execute("select sum(dept) from t;", on: db)
+            }
+        }
+    }
+
+    @Test func endToEndCountStarOnEmptyTable() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table empty_t (a int);", on: db)
+
+            #expect(try Self.execute("select count(*) from empty_t;", on: db) == "0\n")
+            #expect(try Self.execute("select sum(a) from empty_t;", on: db) == "0\n")
+            // MIN/MAX over an empty ungrouped set would need NULL, which this
+            // engine doesn't represent — 0 rows is today's documented result.
+            #expect(try Self.execute("select min(a) from empty_t;", on: db) == "")
+        }
+    }
+
+    @Test func reservedWordsUsableAsIdentifiers() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table stats (id int, sum int, count int);", on: db)
+            try Self.execute("insert into stats values (1, 10, 20);", on: db)
+
+            #expect(try Self.execute("select sum, count from stats;", on: db) == "10,20\n")
+            #expect(try Self.execute("select count(*) from stats;", on: db) == "1\n")
+        }
+    }
+
+    @Test func primaryKeyOnDoubleColumnIsRejected() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+
+            #expect(throws: DatabaseError.invalidData) {
+                try Self.execute("create table pk_double (price double, primary key (price));", on: db)
+            }
+        }
+    }
+
+    @Test func doubleZeroAndNegativeZeroGroupTogether() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (price double);", on: db)
+            try Self.execute("insert into t values (0.0);", on: db)
+            try Self.execute("insert into t values (-0.0);", on: db)
+
+            let out = try Self.execute("select price, count(*) from t group by price;", on: db)
+            #expect(out.split(separator: "\n").count == 1)
+        }
+    }
+
+    @Test func createIndexOnMisalignedDoubleColumnDoesNotCrash() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute(
+                "create table t2 (a int, flag bool, price double, b int, primary key (a));", on: db)
+            try Self.execute("insert into t2 values (1, true, 3.5, 99);", on: db)
+            try Self.execute("insert into t2 values (2, false, 9.25, 100);", on: db)
+
+            // `price` sits at a non-8-aligned byte offset (after `a` and
+            // `flag`); backfilling this index must not crash.
+            try Self.execute("create index idx_b on t2 (b);", on: db)
+            #expect(try Self.execute("select a from t2 where b = 100;", on: db) == "2\n")
+        }
+    }
+
     // MARK: - Helpers
 
     /// Parse a single SELECT statement and return its `QueryAST`. Fails the

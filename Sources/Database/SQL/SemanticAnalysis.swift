@@ -150,7 +150,13 @@ public struct SemanticAnalysis {
                 guard let arg else {
                     throw SQLError.bind("`*` is only valid inside COUNT(...)")
                 }
-                return .aggregate(function: function, arg: try resolveAttr(arg))
+                let boundArg = try resolveAttr(arg)
+                if function == .sum, boundArg.type.tclass != .integer, boundArg.type.tclass != .double {
+                    throw SQLError.bind(
+                        "SUM requires a numeric column, got `\(boundArg.name)` (\(boundArg.type.name))"
+                    )
+                }
+                return .aggregate(function: function, arg: boundArg)
             }
         }
 

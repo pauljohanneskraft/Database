@@ -1,8 +1,10 @@
 /// Hand-written SQL lexer. Recognises a small dialect: SELECT / FROM /
-/// WHERE / AND / NOT / TRUE / FALSE / ORDER / BY / GROUP / ASC / DESC /
-/// COUNT / SUM / MIN / MAX (case-insensitive), identifiers, integer / double /
-/// single- or double-quoted string literals, and the punctuation needed for
-/// the parser (`*`, `,`, `.`, `=`, `!=`, `<`, `<=`, `>`, `>=`, `(`, `)`, `;`).
+/// WHERE / AND / NOT / TRUE / FALSE / ORDER / BY / GROUP / ASC / DESC
+/// (case-insensitive), identifiers, integer / double / single- or
+/// double-quoted string literals, and the punctuation needed for the parser
+/// (`*`, `,`, `.`, `=`, `!=`, `<`, `<=`, `>`, `>=`, `(`, `)`, `;`).
+/// COUNT / SUM / MIN / MAX are NOT keywords — they lex as identifiers and are
+/// recognised contextually by the parser (see `Parser.aggregateFunction`).
 /// Whitespace is skipped; comments are not supported.
 public struct Lexer {
     private let source: [Character]
@@ -175,10 +177,6 @@ public struct Lexer {
         case "group": return .group
         case "asc": return .asc
         case "desc": return .desc
-        case "count": return .count
-        case "sum": return .sum
-        case "min": return .min
-        case "max": return .max
         case "union": return .union
         case "intersect": return .intersect
         case "except": return .except

@@ -15,8 +15,10 @@ public enum Token: Equatable, Sendable {
     case select, from, whereKW, and, not, trueKW, falseKW
     // Clause keywords.
     case order, by, group, asc, desc
-    // Aggregate function keywords.
-    case count, sum, min, max
+    // `count`/`sum`/`min`/`max` are NOT keywords here — they lex as plain
+    // `.identifier`s so existing schemas/queries using them as column/table
+    // names keep working. The parser recognizes them contextually (an
+    // identifier matching one of those names immediately followed by `(`).
     // Set-operator keywords.
     case union, intersect, except, all
     // DDL / DML keywords.

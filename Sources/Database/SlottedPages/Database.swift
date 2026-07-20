@@ -135,6 +135,15 @@ public final class Database {
         if existingSchema.tables.contains(where: { $0.id == id }) {
             throw DatabaseError.duplicateTable
         }
+        // A single-column PRIMARY KEY on a non-indexable type would silently
+        // get no uniqueness enforcement at all (see the auto-index guard
+        // below) — fail loudly instead, before any segments are allocated.
+        if primaryKey.count == 1,
+            let pkCol = columns.first(where: { $0.id == primaryKey[0] }),
+            pkCol.type.tclass == .double || pkCol.type.tclass == .bool
+        {
+            throw DatabaseError.invalidData
+        }
         let n = UInt16(existingSchema.tables.count)
         let spSeg = 10 + 2 * n
         let fsiSeg = 11 + 2 * n
@@ -231,7 +240,7 @@ public final class Database {
             switch column.type.tclass {
             case .integer:
                 if cursor + 4 > Int(read) { return out }
-                let v = readBuffer.withUnsafeBytes { $0.load(fromByteOffset: cursor, as: Int32.self) }
+                let v = readBuffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cursor, as: Int32.self) }
                 out.append(String(v))
                 cursor += 4
             case .char:
@@ -245,7 +254,7 @@ public final class Database {
                 cursor += length
             case .double:
                 if cursor + 8 > Int(read) { return out }
-                let v = readBuffer.withUnsafeBytes { $0.load(fromByteOffset: cursor, as: Double.self) }
+                let v = readBuffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cursor, as: Double.self) }
                 out.append(String(v))
                 cursor += 8
             case .bool:

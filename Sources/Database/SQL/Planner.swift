@@ -161,8 +161,19 @@ public struct Planner {
                 // `COUNT(*)` has no source column; the attrIndex is unread by
                 // `HashAggregation` for `.count`, so any valid slot works.
                 let attrIndex = arg.map { slotMap[SlotKey($0.scanIndex, $0.columnIndex)]! } ?? 0
+                // Zero-row value for an ungrouped aggregate: well-defined for
+                // `.count`/`.sum` (identity `0`, in the argument's numeric
+                // kind for `.sum`); `.min`/`.max` need NULL, which `Register`
+                // can't represent, so they get no synthesized row.
+                let emptyResult: Register?
+                switch function {
+                case .count: emptyResult = Register.from(int: 0)
+                case .sum: emptyResult = arg?.type.tclass == .double ? Register.from(double: 0) : Register.from(int: 0)
+                case .min, .max: emptyResult = nil
+                }
                 aggrFuncs.append(
-                    HashAggregation.AggrFunc(function: Self.aggrFunction(for: function), attrIndex: attrIndex))
+                    HashAggregation.AggrFunc(
+                        function: Self.aggrFunction(for: function), attrIndex: attrIndex, emptyResult: emptyResult))
                 aggregateProjectionIndexes.append(i)
             }
 
