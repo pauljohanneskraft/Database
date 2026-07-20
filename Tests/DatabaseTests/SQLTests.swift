@@ -369,6 +369,52 @@ struct SQLSuite {
         }
     }
 
+    @Test func csvBoolColumnIsCaseInsensitiveAndRejectsGarbage() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (id int, active bool);", on: db)
+
+            let csv = "1,TRUE\n2,False\n3,true\n"
+            let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("bool.csv")
+            try csv.write(to: url, atomically: true, encoding: .utf8)
+            try Self.execute("copy t from '\(url.path)' csv;", on: db)
+
+            let out = Set(try Self.execute("select * from t;", on: db).split(separator: "\n"))
+            #expect(out == ["1,true", "2,false", "3,true"])
+
+            let garbageURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("bool_garbage.csv")
+            try "4,maybe\n".write(to: garbageURL, atomically: true, encoding: .utf8)
+            #expect(throws: DatabaseError.invalidData) {
+                try Self.execute("copy t from '\(garbageURL.path)' csv;", on: db)
+            }
+        }
+    }
+
+    @Test func csvIntAndDoubleColumnsRejectUnparseableValues() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (id int, price double);", on: db)
+
+            let badIntURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("bad_int.csv")
+            try "abc,3.5\n".write(to: badIntURL, atomically: true, encoding: .utf8)
+            #expect(throws: DatabaseError.invalidData) {
+                try Self.execute("copy t from '\(badIntURL.path)' csv;", on: db)
+            }
+
+            let badDoubleURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("bad_double.csv")
+            try "1,N/A\n".write(to: badDoubleURL, atomically: true, encoding: .utf8)
+            #expect(throws: DatabaseError.invalidData) {
+                try Self.execute("copy t from '\(badDoubleURL.path)' csv;", on: db)
+            }
+        }
+    }
+
     // MARK: - WHERE comparison operators
 
     @Test func endToEndWhereInequality() throws {
@@ -510,6 +556,21 @@ struct SQLSuite {
             // MIN/MAX over an empty ungrouped set would need NULL, which this
             // engine doesn't represent — 0 rows is today's documented result.
             #expect(try Self.execute("select min(a) from empty_t;", on: db) == "")
+        }
+    }
+
+    @Test func insertTypeMismatchThrowsBindError() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (id int, name char(8));", on: db)
+
+            #expect(throws: SQLError.self) {
+                try Self.execute("insert into t values ('nope', 'alice');", on: db)
+            }
+            #expect(throws: SQLError.self) {
+                try Self.execute("insert into t values (1, 2);", on: db)
+            }
         }
     }
 

@@ -375,6 +375,13 @@ public struct Parser {
     /// `(` (see `parseSelectItem`).
     private static func aggregateFunction(for token: Token) -> QueryAST.AggregateFunction? {
         guard case .identifier(let name) = token else { return nil }
+        // Cheap length filter before the case-insensitive compare below —
+        // skips it entirely for any identifier that can't possibly match one
+        // of the 4 aggregate names, which is every plain-column reference.
+        switch name.utf8.count {
+        case 3, 5: break
+        default: return nil
+        }
         switch name.lowercased() {
         case "count": return .count
         case "sum": return .sum

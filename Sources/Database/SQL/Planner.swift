@@ -132,14 +132,20 @@ public struct Planner {
         // shape is current.
         let hasAggregation = query.hasAggregation
 
-        var postAggAttrSlot: ((BoundQuery.BoundAttr) -> Int)?
-        var postAggProjIndexSlot: ((Int) -> Int)?
+        // Post-aggregation slot of each GROUP BY attribute, keyed for O(1)
+        // lookup instead of rescanning `query.groupBy` per reference.
+        var groupBySlot: [SlotKey: Int] = [:]
+        // Projection-list indexes (into `query.projections`) that are
+        // aggregates, in the order `HashAggregation` emits their results.
+        var aggregateProjectionIndexes: [Int] = []
 
         if hasAggregation {
             let groupByAttrs = query.groupBy.map { slotMap[SlotKey($0.scanIndex, $0.columnIndex)]! }
+            for (i, attr) in query.groupBy.enumerated() {
+                groupBySlot[SlotKey(attr.scanIndex, attr.columnIndex)] = i
+            }
 
             var aggrFuncs: [HashAggregation.AggrFunc] = []
-            var aggregateProjectionIndexes: [Int] = []
             for (i, item) in query.projections.enumerated() {
                 guard case .aggregate(let function, let arg) = item else { continue }
                 // `COUNT(*)` has no source column; the attrIndex is unread by
@@ -162,27 +168,27 @@ public struct Planner {
             }
 
             op = HashAggregation(input: op, groupByAttrs: groupByAttrs, aggrFuncs: aggrFuncs)
-
-            postAggAttrSlot = { attr in
-                query.groupBy.firstIndex { $0.scanIndex == attr.scanIndex && $0.columnIndex == attr.columnIndex }!
-            }
-            postAggProjIndexSlot = { projIndex in
-                switch query.projections[projIndex] {
-                case .column(let attr):
-                    return postAggAttrSlot!(attr)
-                case .aggregate:
-                    let k = aggregateProjectionIndexes.firstIndex(of: projIndex)!
-                    return query.groupBy.count + k
-                }
-            }
         }
 
+        // Once `HashAggregation` runs, attribute/projection references must
+        // resolve against the post-aggregation row shape (group-by columns
+        // followed by aggregate results) instead of `slotMap`.
         func slotForAttr(_ attr: BoundQuery.BoundAttr) -> Int {
-            if let postAggAttrSlot { return postAggAttrSlot(attr) }
+            if hasAggregation {
+                return groupBySlot[SlotKey(attr.scanIndex, attr.columnIndex)]!
+            }
             return slotMap[SlotKey(attr.scanIndex, attr.columnIndex)]!
         }
         func slotForProjectionIndex(_ i: Int) -> Int {
-            if let postAggProjIndexSlot { return postAggProjIndexSlot(i) }
+            if hasAggregation {
+                switch query.projections[i] {
+                case .column(let attr):
+                    return slotForAttr(attr)
+                case .aggregate:
+                    let k = aggregateProjectionIndexes.firstIndex(of: i)!
+                    return query.groupBy.count + k
+                }
+            }
             if query.projections.isEmpty {
                 // `SELECT *`: slotMap assigns flat column index `i` → slot
                 // `i` exactly (see `appendToSlotMap`), so position `i` (a

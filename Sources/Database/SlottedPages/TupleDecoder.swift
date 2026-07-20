@@ -17,6 +17,13 @@ enum DecodedTupleValue {
 /// it — callers that want partial results (like `Database.readTuple`) just
 /// keep whatever `onColumn` already produced; callers that want all-or-
 /// nothing (like `TableScan`/`TIDResolve`) propagate the `false`.
+///
+/// `onColumn` is non-escaping and called with `@inline(__always)` so
+/// `TableScan`/`TIDResolve`'s per-row, per-column hot path (which passes a
+/// closure literal directly) can be folded down to the same direct-setter
+/// calls the pre-refactor inline decode loops used, in both debug and
+/// release builds.
+@inline(__always)
 func decodeTuple(
     columns: [SchemaColumn],
     buffer: [UInt8],

@@ -191,7 +191,7 @@ public struct SemanticAnalysis {
         let selections = try ast.selections.map {
             (ref, op, lit) -> (BoundQuery.BoundAttr, QueryAST.ComparisonOp, QueryAST.Literal) in
             let attr = try resolveAttr(ref)
-            try Self.checkLiteralType(lit, attr: attr)
+            try Self.checkLiteralType(lit, name: attr.name, type: attr.type)
             return (attr, op, lit)
         }
         let joins = try ast.joins.map { (l, r) -> (BoundQuery.BoundAttr, BoundQuery.BoundAttr) in
@@ -302,12 +302,17 @@ public struct SemanticAnalysis {
         }
     }
 
-    private static func checkLiteralType(
+    /// Checks that `lit` is a valid value for a column/attribute named `name`
+    /// with schema type `type`, throwing a `SQLError.bind` with a consistent
+    /// message otherwise. Shared by `SELECT` predicate binding here and by
+    /// `SQLExecutor.runInsert`'s INSERT-value binding.
+    static func checkLiteralType(
         _ lit: QueryAST.Literal,
-        attr: BoundQuery.BoundAttr
+        name: String,
+        type: SchemaType
     ) throws {
         let compatible: Bool
-        switch (lit, attr.type.tclass) {
+        switch (lit, type.tclass) {
         case (.int, .integer), (.string, .char), (.double, .double), (.bool, .bool):
             compatible = true
         default:
@@ -316,27 +321,32 @@ public struct SemanticAnalysis {
         guard compatible else {
             let literalTypeName = Self.literalTypeName(lit)
             throw SQLError.bind(
-                "attribute `\(attr.name)` is \(attr.type.name) but literal is "
+                "attribute `\(name)` is \(type.name) but literal is "
                     + "\(Self.article(for: literalTypeName)) \(literalTypeName)"
             )
         }
     }
 
-    /// The SQL-facing type name of a literal, for diagnostics — matches the
-    /// vocabulary used by `SchemaType.name` (e.g. "integer" for both).
+    /// The SQL-facing type name of a literal, for diagnostics. Delegates to
+    /// `SchemaType.name` so the two vocabularies can't drift, except for
+    /// `.string` literals: they bind against `.char` columns, but users write
+    /// `'...'` literals, not `char`s, so the diagnostic says "string".
     private static func literalTypeName(_ lit: QueryAST.Literal) -> String {
         switch lit {
-        case .int: return "integer"
-        case .double: return "double"
         case .string: return "string"
-        case .bool: return "bool"
+        case .int: return SchemaType.integer.name
+        case .double: return SchemaType.double.name
+        case .bool: return SchemaType.bool.name
         }
     }
 
-    /// "a" or "an", chosen by whether `word` starts with a vowel.
+    /// "a" or "an" for each of the four literal type names diagnostics use.
+    private static let articles: [String: String] = [
+        "integer": "an", "double": "a", "string": "a", "bool": "a",
+    ]
+
     private static func article(for word: String) -> String {
-        guard let first = word.first else { return "a" }
-        return "aeiou".contains(first) ? "an" : "a"
+        articles[word] ?? "a"
     }
 
     private static func columnsCompatible(_ a: SchemaType, _ b: SchemaType) -> Bool {

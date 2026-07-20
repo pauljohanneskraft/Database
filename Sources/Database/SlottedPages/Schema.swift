@@ -38,6 +38,21 @@ public struct SchemaType: Codable, Equatable, Sendable {
     }
 }
 
+extension SchemaType.Class {
+    /// The `BTree` key representation used for a secondary index over this
+    /// column type, or `nil` if the type isn't indexable (no fixed-width,
+    /// totally-ordered key representation). Single source of truth for
+    /// "is this type indexable" — used for `CREATE INDEX`, single-column
+    /// PRIMARY KEY validation, and PRIMARY KEY auto-indexing.
+    public var indexKeyKind: SchemaIndex.KeyKind? {
+        switch self {
+        case .integer: return .int64
+        case .char: return .char16
+        case .double, .bool: return nil
+        }
+    }
+}
+
 public struct SchemaColumn: Codable, Equatable, Sendable {
     public let id: String
     public let type: SchemaType

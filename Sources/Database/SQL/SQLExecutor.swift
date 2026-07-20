@@ -102,39 +102,12 @@ public struct SQLExecutor {
         }
         var rendered: [String] = []
         for (col, lit) in zip(table.columns, ast.values) {
-            switch (lit, col.type.tclass) {
-            case (.int(let v), .integer):
-                rendered.append(String(v))
-            case (.string(let v), .char):
-                rendered.append(v)
-            case (.double(let v), .double):
-                rendered.append(String(v))
-            case (.bool(let v), .bool):
-                rendered.append(v ? "true" : "false")
-            case (.int(let v), .char):
-                throw SQLError.bind("column `\(col.id)` is char but value is integer `\(v)`")
-            case (.string(let v), .integer):
-                throw SQLError.bind("column `\(col.id)` is integer but value is string `\(v)`")
-            case (.int(let v), .double):
-                throw SQLError.bind("column `\(col.id)` is double but value is integer `\(v)`")
-            case (.string(let v), .double):
-                throw SQLError.bind("column `\(col.id)` is double but value is string `\(v)`")
-            case (.bool(let v), .double):
-                throw SQLError.bind("column `\(col.id)` is double but value is bool `\(v)`")
-            case (.int(let v), .bool):
-                throw SQLError.bind("column `\(col.id)` is bool but value is integer `\(v)`")
-            case (.string(let v), .bool):
-                throw SQLError.bind("column `\(col.id)` is bool but value is string `\(v)`")
-            case (.double(let v), .bool):
-                throw SQLError.bind("column `\(col.id)` is bool but value is double `\(v)`")
-            case (.double(let v), .integer):
-                throw SQLError.bind("column `\(col.id)` is integer but value is double `\(v)`")
-            case (.bool(let v), .integer):
-                throw SQLError.bind("column `\(col.id)` is integer but value is bool `\(v)`")
-            case (.bool(let v), .char):
-                throw SQLError.bind("column `\(col.id)` is char but value is bool `\(v)`")
-            case (.double(let v), .char):
-                throw SQLError.bind("column `\(col.id)` is char but value is double `\(v)`")
+            try SemanticAnalysis.checkLiteralType(lit, name: col.id, type: col.type)
+            switch lit {
+            case .int(let v): rendered.append(String(v))
+            case .string(let v): rendered.append(v)
+            case .double(let v): rendered.append(String(v))
+            case .bool(let v): rendered.append(v ? "true" : "false")
             }
         }
         _ = try db.insert(table: table, values: rendered)

@@ -140,7 +140,7 @@ public final class Database {
         // below) — fail loudly instead, before any segments are allocated.
         if primaryKey.count == 1,
             let pkCol = columns.first(where: { $0.id == primaryKey[0] }),
-            pkCol.type.tclass == .double || pkCol.type.tclass == .bool
+            pkCol.type.tclass.indexKeyKind == nil
         {
             throw DatabaseError.invalidData
         }
@@ -170,7 +170,7 @@ public final class Database {
         // Auto-index a single-column primary key on an indexable type.
         if primaryKey.count == 1,
             let pkCol = table.columns.first(where: { $0.id == primaryKey[0] }),
-            pkCol.type.tclass == .integer || pkCol.type.tclass == .char
+            pkCol.type.tclass.indexKeyKind != nil
         {
             try createIndex(name: "pk_\(id)", tableId: id, columnName: pkCol.id)
         }
@@ -193,7 +193,9 @@ public final class Database {
         for (column, s) in zip(table.columns, values) {
             switch column.type.tclass {
             case .integer:
-                let intValue = Int32(s) ?? 0
+                guard let intValue = Int32(s) else {
+                    throw DatabaseError.invalidData
+                }
                 withUnsafeBytes(of: intValue) { buffer.append(contentsOf: $0) }
             case .char:
                 let length = Int(column.type.length)
@@ -202,10 +204,19 @@ public final class Database {
                     buffer.append(j < chars.count ? chars[j] : 0x00)  // NUL fill
                 }
             case .double:
-                let doubleValue = Double(s) ?? 0
+                guard let doubleValue = Double(s) else {
+                    throw DatabaseError.invalidData
+                }
                 withUnsafeBytes(of: doubleValue) { buffer.append(contentsOf: $0) }
             case .bool:
-                buffer.append(s == "true" ? 1 : 0)
+                switch s.lowercased() {
+                case "true":
+                    buffer.append(1)
+                case "false":
+                    buffer.append(0)
+                default:
+                    throw DatabaseError.invalidData
+                }
             }
         }
 

@@ -149,13 +149,20 @@ public final class Select: UnaryOperator, Operator {
 
     private let select: ([Register]) -> Bool
 
-    public init(input: any Operator, predicate: PredicateAttributeInt64) {
-        let attrIndex = predicate.attrIndex
-        let constant = predicate.constant
-        let p = predicate.predicateType
-        self.select = { row in
-            let lhs = row[attrIndex].asInt
-            switch p {
+    /// Builds the shared `select` closure for all four `PredicateAttribute*`
+    /// constant-comparison inits: each just encodes its constant into a
+    /// `Register` once and compares via `Register`'s `Comparable`
+    /// conformance, so ordering (including `.bool`'s `false < true`) is
+    /// defined in exactly one place (`Register.swift`) rather than
+    /// re-implemented per type.
+    private static func makeSelect(
+        attrIndex: Int,
+        constant: Register,
+        predicateType: PredicateType
+    ) -> ([Register]) -> Bool {
+        { row in
+            let lhs = row[attrIndex]
+            switch predicateType {
             case .eq: return lhs == constant
             case .ne: return lhs != constant
             case .lt: return lhs < constant
@@ -164,64 +171,41 @@ public final class Select: UnaryOperator, Operator {
             case .ge: return lhs >= constant
             }
         }
+    }
+
+    public init(input: any Operator, predicate: PredicateAttributeInt64) {
+        self.select = Self.makeSelect(
+            attrIndex: predicate.attrIndex,
+            constant: Register.from(int: predicate.constant),
+            predicateType: predicate.predicateType
+        )
         super.init(input: input)
     }
 
     public init(input: any Operator, predicate: PredicateAttributeChar16) {
-        let attrIndex = predicate.attrIndex
-        let constant = predicate.constant
-        let p = predicate.predicateType
-        // Encode the constant once into a Register to leverage 16-byte equality
-        // and lex ordering identical to the rest of the system.
-        let constReg = Register.from(string: constant)
-        self.select = { row in
-            let lhs = row[attrIndex]
-            switch p {
-            case .eq: return lhs == constReg
-            case .ne: return lhs != constReg
-            case .lt: return lhs < constReg
-            case .le: return lhs <= constReg
-            case .gt: return lhs > constReg
-            case .ge: return lhs >= constReg
-            }
-        }
+        self.select = Self.makeSelect(
+            attrIndex: predicate.attrIndex,
+            constant: Register.from(string: predicate.constant),
+            predicateType: predicate.predicateType
+        )
         super.init(input: input)
     }
 
     public init(input: any Operator, predicate: PredicateAttributeDouble) {
-        let attrIndex = predicate.attrIndex
-        let constant = predicate.constant
-        let p = predicate.predicateType
-        self.select = { row in
-            let lhs = row[attrIndex].asDouble
-            switch p {
-            case .eq: return lhs == constant
-            case .ne: return lhs != constant
-            case .lt: return lhs < constant
-            case .le: return lhs <= constant
-            case .gt: return lhs > constant
-            case .ge: return lhs >= constant
-            }
-        }
+        self.select = Self.makeSelect(
+            attrIndex: predicate.attrIndex,
+            constant: Register.from(double: predicate.constant),
+            predicateType: predicate.predicateType
+        )
         super.init(input: input)
     }
 
     public init(input: any Operator, predicate: PredicateAttributeBool) {
-        let attrIndex = predicate.attrIndex
-        let constant = predicate.constant
-        let p = predicate.predicateType
-        self.select = { row in
-            let lhs = row[attrIndex].asBool
-            switch p {
-            case .eq: return lhs == constant
-            case .ne: return lhs != constant
-            // false < true ordering for completeness.
-            case .lt: return !lhs && constant
-            case .le: return !lhs || (lhs == constant)
-            case .gt: return lhs && !constant
-            case .ge: return lhs || (lhs == constant)
-            }
-        }
+        self.select = Self.makeSelect(
+            attrIndex: predicate.attrIndex,
+            constant: Register.from(bool: predicate.constant),
+            predicateType: predicate.predicateType
+        )
         super.init(input: input)
     }
 
