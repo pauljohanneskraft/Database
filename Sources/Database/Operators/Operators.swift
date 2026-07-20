@@ -22,6 +22,10 @@ public final class Print: UnaryOperator, Operator {
         let row = input.getOutput()
         for (index, value) in row.enumerated() {
             if index > 0 { stream.write(",") }
+            if value.isNull {
+                stream.write("NULL")
+                continue
+            }
             switch value.kind {
             case .int64:
                 stream.write(String(value.asInt))
@@ -453,12 +457,13 @@ public final class HashAggregation: UnaryOperator, Operator {
         public let function: Function
         public let attrIndex: Int
         /// Value to emit for this aggregate when the (ungrouped) input has
-        /// zero rows — well-defined only for `.count`/`.sum` (identity
-        /// element `0`). `.min`/`.max` would need NULL, which `Register`
-        /// doesn't represent, so leaving this `nil` keeps today's "no output
-        /// row" behavior for a query containing a `.min`/`.max`.
-        public let emptyResult: Register?
-        public init(function: Function, attrIndex: Int, emptyResult: Register? = nil) {
+        /// zero rows: the identity element `0` for `.count`/`.sum`, or a NULL
+        /// register for `.min`/`.max` (there's no such thing as the min/max of
+        /// an empty set). Always defined, so an ungrouped aggregate query
+        /// always emits its mandatory single row regardless of which
+        /// functions it mixes.
+        public let emptyResult: Register
+        public init(function: Function, attrIndex: Int, emptyResult: Register = Register.from(int: 0)) {
             self.function = function
             self.attrIndex = attrIndex
             self.emptyResult = emptyResult
@@ -540,14 +545,10 @@ public final class HashAggregation: UnaryOperator, Operator {
         // An ungrouped aggregate (no GROUP BY) over zero input rows must
         // still emit exactly one row per SQL semantics (e.g. `COUNT(*)` = 0)
         // — unlike the grouped case (0 groups → 0 rows, which is already
-        // correct). Only synthesize that row when every aggregate has a
-        // well-defined zero-row value; a `.min`/`.max` in the mix leaves
-        // `output` empty, matching today's behavior.
+        // correct). Every `AggrFunc.emptyResult` is defined (NULL for
+        // `.min`/`.max`), so this row is unconditional.
         if output.isEmpty, groupByAttrs.isEmpty, !aggrFuncs.isEmpty {
-            let emptyResults = aggrFuncs.compactMap(\.emptyResult)
-            if emptyResults.count == aggrFuncs.count {
-                output.append(emptyResults)
-            }
+            output.append(aggrFuncs.map(\.emptyResult))
         }
 
         return !output.isEmpty

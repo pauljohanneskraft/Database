@@ -204,7 +204,12 @@ public final class Database {
                     buffer.append(j < chars.count ? chars[j] : 0x00)  // NUL fill
                 }
             case .double:
-                guard let doubleValue = Double(s) else {
+                // NaN is rejected outright: `Register`'s hash/equality treat
+                // it with IEEE-754 semantics (NaN != NaN) for correct `=`/`<`
+                // predicate behavior, which means two stored NaNs would never
+                // group together in GROUP BY / HashJoin. Simplest fix is to
+                // never let one be stored.
+                guard let doubleValue = Double(s), !doubleValue.isNaN else {
                     throw DatabaseError.invalidData
                 }
                 withUnsafeBytes(of: doubleValue) { buffer.append(contentsOf: $0) }

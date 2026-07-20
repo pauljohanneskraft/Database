@@ -139,6 +139,7 @@ public struct SemanticAnalysis {
         }
 
         let groupBy = try ast.groupBy.map(resolveAttr)
+        let groupBySlots = Set(groupBy.map { SlotKey($0.scanIndex, $0.columnIndex) })
 
         let projections = try ast.projections.map { item -> BoundQuery.BoundSelectItem in
             switch item {
@@ -180,7 +181,7 @@ public struct SemanticAnalysis {
             }
             for item in projections {
                 guard case .column(let attr) = item else { continue }
-                guard Self.attr(attr, isIn: groupBy) else {
+                guard groupBySlots.contains(SlotKey(attr.scanIndex, attr.columnIndex)) else {
                     throw SQLError.bind(
                         "column `\(attr.name)` must appear in GROUP BY or be used in an aggregate function"
                     )
@@ -221,7 +222,7 @@ public struct SemanticAnalysis {
             case .name(let ref):
                 let attr = try resolveAttr(ref)
                 if hasAggregation {
-                    guard Self.attr(attr, isIn: groupBy) else {
+                    guard groupBySlots.contains(SlotKey(attr.scanIndex, attr.columnIndex)) else {
                         throw SQLError.bind(
                             "ORDER BY column `\(attr.name)` must appear in GROUP BY or be used in an aggregate function"
                         )
@@ -255,10 +256,6 @@ public struct SemanticAnalysis {
     }
 
     // MARK: - Helpers
-
-    private static func attr(_ attr: BoundQuery.BoundAttr, isIn list: [BoundQuery.BoundAttr]) -> Bool {
-        list.contains { $0.scanIndex == attr.scanIndex && $0.columnIndex == attr.columnIndex }
-    }
 
     private static func resolveAttribute(
         _ ref: QueryAST.AttrRef,
@@ -313,7 +310,7 @@ public struct SemanticAnalysis {
     ) throws {
         let compatible: Bool
         switch (lit, type.tclass) {
-        case (.int, .integer), (.string, .char), (.double, .double), (.bool, .bool):
+        case (.int, .integer), (.int, .double), (.string, .char), (.double, .double), (.bool, .bool):
             compatible = true
         default:
             compatible = false

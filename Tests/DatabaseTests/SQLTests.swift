@@ -412,6 +412,16 @@ struct SQLSuite {
             #expect(throws: DatabaseError.invalidData) {
                 try Self.execute("copy t from '\(badDoubleURL.path)' csv;", on: db)
             }
+
+            // `Double("nan")` parses successfully, but a stored NaN would
+            // never group with another NaN in GROUP BY/JOIN (NaN != NaN per
+            // IEEE-754) — rejected outright instead.
+            let nanURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("nan.csv")
+            try "1,nan\n".write(to: nanURL, atomically: true, encoding: .utf8)
+            #expect(throws: DatabaseError.invalidData) {
+                try Self.execute("copy t from '\(nanURL.path)' csv;", on: db)
+            }
         }
     }
 
@@ -450,6 +460,20 @@ struct SQLSuite {
 
             #expect(try Self.execute("select id from t where active = true;", on: db) == "1\n")
             #expect(try Self.execute("select id from t where price < 5.0;", on: db) == "1\n")
+        }
+    }
+
+    @Test func integerLiteralBindsAgainstDoubleColumn() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (id int, price double);", on: db)
+            // A bare integer literal is a valid value/comparand for a DOUBLE
+            // column — no decimal point required.
+            try Self.execute("insert into t values (1, 100);", on: db)
+
+            #expect(try Self.execute("select * from t;", on: db) == "1,100.0\n")
+            #expect(try Self.execute("select id from t where price = 100;", on: db) == "1\n")
         }
     }
 
@@ -553,9 +577,12 @@ struct SQLSuite {
 
             #expect(try Self.execute("select count(*) from empty_t;", on: db) == "0\n")
             #expect(try Self.execute("select sum(a) from empty_t;", on: db) == "0\n")
-            // MIN/MAX over an empty ungrouped set would need NULL, which this
-            // engine doesn't represent — 0 rows is today's documented result.
-            #expect(try Self.execute("select min(a) from empty_t;", on: db) == "")
+            // MIN/MAX over an empty ungrouped set is NULL, matching SQL.
+            #expect(try Self.execute("select min(a) from empty_t;", on: db) == "NULL\n")
+            // Mixing a well-defined aggregate (COUNT) with one that has no
+            // value over an empty set (MIN) must not drop the row entirely —
+            // COUNT(*) always returns exactly one row.
+            #expect(try Self.execute("select count(*), min(a) from empty_t;", on: db) == "0,NULL\n")
         }
     }
 

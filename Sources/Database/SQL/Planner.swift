@@ -151,15 +151,14 @@ public struct Planner {
                 // `COUNT(*)` has no source column; the attrIndex is unread by
                 // `HashAggregation` for `.count`, so any valid slot works.
                 let attrIndex = arg.map { slotMap[SlotKey($0.scanIndex, $0.columnIndex)]! } ?? 0
-                // Zero-row value for an ungrouped aggregate: well-defined for
-                // `.count`/`.sum` (identity `0`, in the argument's numeric
-                // kind for `.sum`); `.min`/`.max` need NULL, which `Register`
-                // can't represent, so they get no synthesized row.
-                let emptyResult: Register?
+                // Zero-row value for an ungrouped aggregate: the identity `0`
+                // (in the argument's numeric kind) for `.count`/`.sum`, or
+                // NULL for `.min`/`.max` (there's no min/max of an empty set).
+                let emptyResult: Register
                 switch function {
                 case .count: emptyResult = Register.from(int: 0)
                 case .sum: emptyResult = arg?.type.tclass == .double ? Register.from(double: 0) : Register.from(int: 0)
-                case .min, .max: emptyResult = nil
+                case .min, .max: emptyResult = Register.null(kind: Self.registerKind(for: arg?.type.tclass))
                 }
                 aggrFuncs.append(
                     HashAggregation.AggrFunc(
@@ -295,6 +294,14 @@ public struct Planner {
                 predicate: Select.PredicateAttributeDouble(
                     attrIndex: slot, constant: v, predicateType: predicateType
                 ))
+        case (.int(let v), .double):
+            // Integer literal against a DOUBLE column (`WHERE price = 100`):
+            // widen to the column's actual comparison kind.
+            return Select(
+                input: input,
+                predicate: Select.PredicateAttributeDouble(
+                    attrIndex: slot, constant: Double(v), predicateType: predicateType
+                ))
         case (.bool(let v), _):
             return Select(
                 input: input,
@@ -329,11 +336,25 @@ public struct Planner {
         }
     }
 
+    /// `Register.Kind` a NULL `MIN`/`MAX` result should carry as metadata.
+    /// Never actually read back (the register is NULL), so an absent `tclass`
+    /// (can't happen for `.min`/`.max` — their arg is never nil) just falls
+    /// back to `.int64`.
+    private static func registerKind(for tclass: SchemaType.Class?) -> Register.Kind {
+        switch tclass {
+        case .integer, nil: return .int64
+        case .double: return .double
+        case .bool: return .bool
+        case .char: return .char16
+        }
+    }
+
 }
 
 /// Compact hashable key for `(scanIndex, columnIndex)` so we don't need an
-/// outer dictionary keyed on `BoundAttr` (which isn't Hashable).
-private struct SlotKey: Hashable {
+/// outer dictionary keyed on `BoundAttr` (which isn't Hashable). Shared with
+/// `SemanticAnalysis` for its GROUP BY/ORDER BY membership checks.
+struct SlotKey: Hashable {
     let scanIndex: Int
     let columnIndex: Int
     init(_ s: Int, _ c: Int) { self.scanIndex = s; self.columnIndex = c }
