@@ -121,7 +121,8 @@ struct SQLSuite {
         let ast = try Self.parseSelect("select * from studenten s where s.matrnr = 24002")
         #expect(ast.selections.count == 1)
         #expect(ast.joins.isEmpty)
-        if case .int(let v) = ast.selections[0].1 {
+        #expect(ast.selections[0].1 == .eq)
+        if case .int(let v) = ast.selections[0].2 {
             #expect(v == 24002)
         } else {
             Issue.record("expected int literal")
@@ -247,8 +248,12 @@ struct SQLSuite {
         // `name` is only on studenten.
         let ast = try Self.parseSelect("select name from studenten s, hoeren h")
         let bound = try SemanticAnalysis().analyse(ast, schema: Self.studentenSchema())
-        #expect(bound.projections[0].name == "name")
-        #expect(bound.projections[0].scanIndex == 0)
+        guard case .column(let attr) = bound.projections[0] else {
+            Issue.record("expected a plain column projection")
+            return
+        }
+        #expect(attr.name == "name")
+        #expect(attr.scanIndex == 0)
     }
 
     // MARK: - End-to-end (parse → plan → execute)
@@ -361,6 +366,290 @@ struct SQLSuite {
             #expect(lines.count == 3)
             #expect(lines[0].hasPrefix("1,alice"))
             #expect(lines[2].hasPrefix("3,carol"))
+        }
+    }
+
+    @Test func csvBoolColumnIsCaseInsensitiveAndRejectsGarbage() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (id int, active bool);", on: db)
+
+            let csv = "1,TRUE\n2,False\n3,true\n"
+            let url = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("bool.csv")
+            try csv.write(to: url, atomically: true, encoding: .utf8)
+            try Self.execute("copy t from '\(url.path)' csv;", on: db)
+
+            let out = Set(try Self.execute("select * from t;", on: db).split(separator: "\n"))
+            #expect(out == ["1,true", "2,false", "3,true"])
+
+            let garbageURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("bool_garbage.csv")
+            try "4,maybe\n".write(to: garbageURL, atomically: true, encoding: .utf8)
+            #expect(throws: DatabaseError.invalidData) {
+                try Self.execute("copy t from '\(garbageURL.path)' csv;", on: db)
+            }
+        }
+    }
+
+    @Test func csvIntAndDoubleColumnsRejectUnparseableValues() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (id int, price double);", on: db)
+
+            let badIntURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("bad_int.csv")
+            try "abc,3.5\n".write(to: badIntURL, atomically: true, encoding: .utf8)
+            #expect(throws: DatabaseError.invalidData) {
+                try Self.execute("copy t from '\(badIntURL.path)' csv;", on: db)
+            }
+
+            let badDoubleURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("bad_double.csv")
+            try "1,N/A\n".write(to: badDoubleURL, atomically: true, encoding: .utf8)
+            #expect(throws: DatabaseError.invalidData) {
+                try Self.execute("copy t from '\(badDoubleURL.path)' csv;", on: db)
+            }
+
+            // `Double("nan")` parses successfully, but a stored NaN would
+            // never group with another NaN in GROUP BY/JOIN (NaN != NaN per
+            // IEEE-754) — rejected outright instead.
+            let nanURL = URL(fileURLWithPath: FileManager.default.currentDirectoryPath)
+                .appendingPathComponent("nan.csv")
+            try "1,nan\n".write(to: nanURL, atomically: true, encoding: .utf8)
+            #expect(throws: DatabaseError.invalidData) {
+                try Self.execute("copy t from '\(nanURL.path)' csv;", on: db)
+            }
+        }
+    }
+
+    // MARK: - WHERE comparison operators
+
+    @Test func endToEndWhereInequality() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (a int);", on: db)
+            for i in 1...5 {
+                try Self.execute("insert into t values (\(i));", on: db)
+            }
+            #expect(Set(try Self.execute("select a from t where a < 3;", on: db).split(separator: "\n")) == ["1", "2"])
+            #expect(
+                Set(try Self.execute("select a from t where a >= 3;", on: db).split(separator: "\n"))
+                    == ["3", "4", "5"])
+            #expect(
+                Set(try Self.execute("select a from t where a != 3;", on: db).split(separator: "\n"))
+                    == ["1", "2", "4", "5"])
+        }
+    }
+
+    // MARK: - DOUBLE / BOOL columns
+
+    @Test func endToEndDoubleBoolColumns() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (id int, price double, active bool);", on: db)
+            try Self.execute("insert into t values (1, 3.5, true);", on: db)
+            try Self.execute("insert into t values (2, 9.25, false);", on: db)
+
+            let out = Set(try Self.execute("select * from t;", on: db).split(separator: "\n"))
+            #expect(out == ["1,3.5,true", "2,9.25,false"])
+
+            #expect(try Self.execute("select id from t where active = true;", on: db) == "1\n")
+            #expect(try Self.execute("select id from t where price < 5.0;", on: db) == "1\n")
+        }
+    }
+
+    @Test func integerLiteralBindsAgainstDoubleColumn() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (id int, price double);", on: db)
+            // A bare integer literal is a valid value/comparand for a DOUBLE
+            // column — no decimal point required.
+            try Self.execute("insert into t values (1, 100);", on: db)
+
+            #expect(try Self.execute("select * from t;", on: db) == "1,100.0\n")
+            #expect(try Self.execute("select id from t where price = 100;", on: db) == "1\n")
+        }
+    }
+
+    // MARK: - HashJoin duplicate keys
+
+    @Test func endToEndHashJoinDuplicateLeftKeys() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table orders (oid int, cust int);", on: db)
+            try Self.execute("create table payments (oid int, amount int);", on: db)
+            // Two orders rows share `oid = 1` — the join must fan out both
+            // against the single matching payment, not drop one.
+            try Self.execute("insert into orders values (1, 100);", on: db)
+            try Self.execute("insert into orders values (1, 200);", on: db)
+            try Self.execute("insert into payments values (1, 50);", on: db)
+
+            let out = try Self.execute(
+                "select orders.cust, payments.amount from orders, payments where orders.oid = payments.oid;",
+                on: db)
+            #expect(Set(out.split(separator: "\n")) == ["100,50", "200,50"])
+        }
+    }
+
+    // MARK: - GROUP BY / aggregates / ORDER BY
+
+    @Test func endToEndGroupByAggregatesOrderBy() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table employees (dept char(8), salary int);", on: db)
+            try Self.execute("insert into employees values ('eng', 100);", on: db)
+            try Self.execute("insert into employees values ('eng', 200);", on: db)
+            try Self.execute("insert into employees values ('sales', 50);", on: db)
+
+            let out = try Self.execute(
+                "select dept, count(*), sum(salary) from employees group by dept order by dept;",
+                on: db)
+            #expect(out == "eng,2,300\n" + "sales,1,50\n")
+        }
+    }
+
+    @Test func endToEndGroupByWithoutAggregateFunction() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (dept char(8));", on: db)
+            try Self.execute("insert into t values ('eng');", on: db)
+            try Self.execute("insert into t values ('eng');", on: db)
+            try Self.execute("insert into t values ('sales');", on: db)
+
+            let out = try Self.execute("select dept from t group by dept;", on: db)
+            #expect(Set(out.split(separator: "\n")) == ["eng", "sales"])
+        }
+    }
+
+    @Test func endToEndOrderByPosition() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (a int);", on: db)
+            try Self.execute("insert into t values (3);", on: db)
+            try Self.execute("insert into t values (1);", on: db)
+            try Self.execute("insert into t values (2);", on: db)
+
+            let out = try Self.execute("select a from t order by 1 desc;", on: db)
+            #expect(out == "3\n2\n1\n")
+        }
+    }
+
+    @Test func endToEndSumOnDoubleColumn() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table sales (dept char(8), price double);", on: db)
+            try Self.execute("insert into sales values ('eng', 3.5);", on: db)
+            try Self.execute("insert into sales values ('eng', 9.25);", on: db)
+
+            let out = try Self.execute("select dept, sum(price) from sales group by dept;", on: db)
+            #expect(out == "eng,12.75\n")
+        }
+    }
+
+    @Test func sumRejectsNonNumericColumn() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (dept char(8));", on: db)
+
+            #expect(throws: SQLError.self) {
+                try Self.execute("select sum(dept) from t;", on: db)
+            }
+        }
+    }
+
+    @Test func endToEndCountStarOnEmptyTable() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table empty_t (a int);", on: db)
+
+            #expect(try Self.execute("select count(*) from empty_t;", on: db) == "0\n")
+            #expect(try Self.execute("select sum(a) from empty_t;", on: db) == "0\n")
+            // MIN/MAX over an empty ungrouped set is NULL, matching SQL.
+            #expect(try Self.execute("select min(a) from empty_t;", on: db) == "NULL\n")
+            // Mixing a well-defined aggregate (COUNT) with one that has no
+            // value over an empty set (MIN) must not drop the row entirely —
+            // COUNT(*) always returns exactly one row.
+            #expect(try Self.execute("select count(*), min(a) from empty_t;", on: db) == "0,NULL\n")
+        }
+    }
+
+    @Test func insertTypeMismatchThrowsBindError() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (id int, name char(8));", on: db)
+
+            #expect(throws: SQLError.self) {
+                try Self.execute("insert into t values ('nope', 'alice');", on: db)
+            }
+            #expect(throws: SQLError.self) {
+                try Self.execute("insert into t values (1, 2);", on: db)
+            }
+        }
+    }
+
+    @Test func reservedWordsUsableAsIdentifiers() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table stats (id int, sum int, count int);", on: db)
+            try Self.execute("insert into stats values (1, 10, 20);", on: db)
+
+            #expect(try Self.execute("select sum, count from stats;", on: db) == "10,20\n")
+            #expect(try Self.execute("select count(*) from stats;", on: db) == "1\n")
+        }
+    }
+
+    @Test func primaryKeyOnDoubleColumnIsRejected() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+
+            #expect(throws: DatabaseError.invalidData) {
+                try Self.execute("create table pk_double (price double, primary key (price));", on: db)
+            }
+        }
+    }
+
+    @Test func doubleZeroAndNegativeZeroGroupTogether() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute("create table t (price double);", on: db)
+            try Self.execute("insert into t values (0.0);", on: db)
+            try Self.execute("insert into t values (-0.0);", on: db)
+
+            let out = try Self.execute("select price, count(*) from t group by price;", on: db)
+            #expect(out.split(separator: "\n").count == 1)
+        }
+    }
+
+    @Test func createIndexOnMisalignedDoubleColumnDoesNotCrash() throws {
+        try TestSupport.withTempCwd {
+            let db = Database(pageSize: 1024, pageCount: 32)
+            try db.loadNewSchema(Schema(tables: []))
+            try Self.execute(
+                "create table t2 (a int, flag bool, price double, b int, primary key (a));", on: db)
+            try Self.execute("insert into t2 values (1, true, 3.5, 99);", on: db)
+            try Self.execute("insert into t2 values (2, false, 9.25, 100);", on: db)
+
+            // `price` sits at a non-8-aligned byte offset (after `a` and
+            // `flag`); backfilling this index must not crash.
+            try Self.execute("create index idx_b on t2 (b);", on: db)
+            #expect(try Self.execute("select a from t2 where b = 100;", on: db) == "2\n")
         }
     }
 

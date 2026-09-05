@@ -10,10 +10,16 @@
 ///      later predicates know which slot to read.
 ///   3. Any remaining `joinCondition`s become attr-attr `Select` filters
 ///      (e.g. three-way joins where two of the three conditions already
-///      paired up).
+///      paired up); non-equality attr-attr predicates (`attrComparisons`)
+///      become `Select` filters too, never a `HashJoin` condition.
 ///   4. Each `selection` becomes a `Select` with the appropriate predicate
-///      kind.
-///   5. If `projections` is non-empty, wrap in `Projection`.
+///      kind and comparison operator.
+///   5. If the query groups or projects an aggregate, wrap in
+///      `HashAggregation` — this changes the row shape to group-by columns
+///      followed by aggregate results.
+///   6. If `orderBy` is non-empty, wrap in `Sort`, resolved against whatever
+///      row shape is current (post-aggregation if step 5 ran).
+///   7. If `projections` is non-empty, wrap in `Projection`.
 public struct Planner {
     private let db: Database
 
@@ -96,8 +102,11 @@ public struct Planner {
             currentWidth += rel.table.columns.count
         }
 
-        // Remaining join conditions → attr-attr filters.
-        for (l, r) in remainingJoins {
+        // Remaining join conditions (always equality) plus non-equality
+        // attr-attr comparisons both become attr-attr `Select` filters.
+        let attrFilters: [(BoundQuery.BoundAttr, QueryAST.ComparisonOp, BoundQuery.BoundAttr)] =
+            remainingJoins.map { ($0.0, .eq, $0.1) } + query.attrComparisons
+        for (l, cmpOp, r) in attrFilters {
             let lSlot = slotMap[SlotKey(l.scanIndex, l.columnIndex)]!
             let rSlot = slotMap[SlotKey(r.scanIndex, r.columnIndex)]!
             op = Select(
@@ -105,22 +114,111 @@ public struct Planner {
                 predicate: Select.PredicateAttributeAttribute(
                     attrLeftIndex: lSlot,
                     attrRightIndex: rSlot,
-                    predicateType: .eq
+                    predicateType: Self.predicateType(for: cmpOp)
                 )
             )
         }
 
         // Apply each scalar selection not already consumed by an index scan.
-        for (attr, lit) in remainingSelections {
+        for (attr, cmpOp, lit) in remainingSelections {
             let slot = slotMap[SlotKey(attr.scanIndex, attr.columnIndex)]!
-            op = applySelection(input: op, slot: slot, literal: lit, attr: attr)
+            op = applySelection(input: op, slot: slot, literal: lit, attr: attr, op: cmpOp)
+        }
+
+        // GROUP BY / aggregates: once `HashAggregation` runs, the row shape
+        // changes from "one slot per scanned column" to "group-by columns
+        // followed by aggregate results, in that order" — `postAgg*` below
+        // resolve attributes/projection-list positions against whichever
+        // shape is current.
+        let hasAggregation = query.hasAggregation
+
+        // Post-aggregation slot of each GROUP BY attribute, keyed for O(1)
+        // lookup instead of rescanning `query.groupBy` per reference.
+        var groupBySlot: [SlotKey: Int] = [:]
+        // Projection-list indexes (into `query.projections`) that are
+        // aggregates, in the order `HashAggregation` emits their results.
+        var aggregateProjectionIndexes: [Int] = []
+
+        if hasAggregation {
+            let groupByAttrs = query.groupBy.map { slotMap[SlotKey($0.scanIndex, $0.columnIndex)]! }
+            for (i, attr) in query.groupBy.enumerated() {
+                groupBySlot[SlotKey(attr.scanIndex, attr.columnIndex)] = i
+            }
+
+            var aggrFuncs: [HashAggregation.AggrFunc] = []
+            for (i, item) in query.projections.enumerated() {
+                guard case .aggregate(let function, let arg) = item else { continue }
+                // `COUNT(*)` has no source column; the attrIndex is unread by
+                // `HashAggregation` for `.count`, so any valid slot works.
+                let attrIndex = arg.map { slotMap[SlotKey($0.scanIndex, $0.columnIndex)]! } ?? 0
+                // Zero-row value for an ungrouped aggregate: the identity `0`
+                // (in the argument's numeric kind) for `.count`/`.sum`, or
+                // NULL for `.min`/`.max` (there's no min/max of an empty set).
+                let emptyResult: Register
+                switch function {
+                case .count: emptyResult = Register.from(int: 0)
+                case .sum: emptyResult = arg?.type.tclass == .double ? Register.from(double: 0) : Register.from(int: 0)
+                case .min, .max: emptyResult = Register.null(kind: Self.registerKind(for: arg?.type.tclass))
+                }
+                aggrFuncs.append(
+                    HashAggregation.AggrFunc(
+                        function: Self.aggrFunction(for: function), attrIndex: attrIndex, emptyResult: emptyResult))
+                aggregateProjectionIndexes.append(i)
+            }
+
+            op = HashAggregation(input: op, groupByAttrs: groupByAttrs, aggrFuncs: aggrFuncs)
+        }
+
+        // Once `HashAggregation` runs, attribute/projection references must
+        // resolve against the post-aggregation row shape (group-by columns
+        // followed by aggregate results) instead of `slotMap`.
+        func slotForAttr(_ attr: BoundQuery.BoundAttr) -> Int {
+            if hasAggregation {
+                return groupBySlot[SlotKey(attr.scanIndex, attr.columnIndex)]!
+            }
+            return slotMap[SlotKey(attr.scanIndex, attr.columnIndex)]!
+        }
+        func slotForProjectionIndex(_ i: Int) -> Int {
+            if hasAggregation {
+                switch query.projections[i] {
+                case .column(let attr):
+                    return slotForAttr(attr)
+                case .aggregate:
+                    let k = aggregateProjectionIndexes.firstIndex(of: i)!
+                    return query.groupBy.count + k
+                }
+            }
+            if query.projections.isEmpty {
+                // `SELECT *`: slotMap assigns flat column index `i` → slot
+                // `i` exactly (see `appendToSlotMap`), so position `i` (a
+                // 1-based `ORDER BY <n>` already converted to 0-based) is
+                // already the slot.
+                return i
+            }
+            switch query.projections[i] {
+            case .column(let attr): return slotForAttr(attr)
+            case .aggregate:
+                preconditionFailure("aggregate projection without aggregation")
+            }
+        }
+
+        // ORDER BY: must run before the final projection, since its criteria
+        // reference the pre-projection (but post-aggregation) row shape.
+        if !query.orderBy.isEmpty {
+            let criteria = query.orderBy.map { item -> Sort.Criterion in
+                let slot: Int
+                switch item.key {
+                case .attr(let attr): slot = slotForAttr(attr)
+                case .projectionIndex(let i): slot = slotForProjectionIndex(i)
+                }
+                return Sort.Criterion(attrIndex: slot, descending: item.descending)
+            }
+            op = Sort(input: op, criteria: criteria)
         }
 
         // Final projection.
         if !query.projections.isEmpty {
-            let indexes = query.projections.map { attr in
-                slotMap[SlotKey(attr.scanIndex, attr.columnIndex)]!
-            }
+            let indexes = query.projections.indices.map { slotForProjectionIndex($0) }
             op = Projection(input: op, attrIndexes: indexes)
         }
 
@@ -136,14 +234,17 @@ public struct Planner {
     /// Only the first matching indexed selection is consumed.
     private func makeScan(
         for rel: BoundQuery.BoundRel,
-        remainingSelections: inout [(BoundQuery.BoundAttr, QueryAST.Literal)]
+        remainingSelections: inout [(BoundQuery.BoundAttr, QueryAST.ComparisonOp, QueryAST.Literal)]
     ) throws -> any Operator {
         guard let sp = db.slottedPages[rel.table.spSegment] else {
             throw SQLError.plan("table `\(rel.table.id)` has no SP segment loaded")
         }
         for i in remainingSelections.indices {
-            let (attr, lit) = remainingSelections[i]
-            guard attr.scanIndex == rel.scanIndex,
+            let (attr, op, lit) = remainingSelections[i]
+            // Indexes only support point lookups — only an equality
+            // selection is eligible for the IndexScan+TIDResolve path.
+            guard op == .eq,
+                attr.scanIndex == rel.scanIndex,
                 let index = db.index(on: rel.table, columnIndex: attr.columnIndex),
                 let scan = index.indexScan(forLiteral: lit)
             else { continue }
@@ -168,14 +269,16 @@ public struct Planner {
         input: any Operator,
         slot: Int,
         literal: QueryAST.Literal,
-        attr: BoundQuery.BoundAttr
+        attr: BoundQuery.BoundAttr,
+        op: QueryAST.ComparisonOp
     ) -> any Operator {
+        let predicateType = Self.predicateType(for: op)
         switch (literal, attr.type.tclass) {
         case (.int(let v), .integer):
             return Select(
                 input: input,
                 predicate: Select.PredicateAttributeInt64(
-                    attrIndex: slot, constant: v, predicateType: .eq
+                    attrIndex: slot, constant: v, predicateType: predicateType
                 ))
         case (.string(let v), .char):
             // Char values flow as content bytes (no padding), so the constant
@@ -183,19 +286,27 @@ public struct Planner {
             return Select(
                 input: input,
                 predicate: Select.PredicateAttributeChar16(
-                    attrIndex: slot, constant: v, predicateType: .eq
+                    attrIndex: slot, constant: v, predicateType: predicateType
                 ))
         case (.double(let v), _):
             return Select(
                 input: input,
                 predicate: Select.PredicateAttributeDouble(
-                    attrIndex: slot, constant: v, predicateType: .eq
+                    attrIndex: slot, constant: v, predicateType: predicateType
+                ))
+        case (.int(let v), .double):
+            // Integer literal against a DOUBLE column (`WHERE price = 100`):
+            // widen to the column's actual comparison kind.
+            return Select(
+                input: input,
+                predicate: Select.PredicateAttributeDouble(
+                    attrIndex: slot, constant: Double(v), predicateType: predicateType
                 ))
         case (.bool(let v), _):
             return Select(
                 input: input,
                 predicate: Select.PredicateAttributeBool(
-                    attrIndex: slot, constant: v, predicateType: .eq
+                    attrIndex: slot, constant: v, predicateType: predicateType
                 ))
         default:
             // SemanticAnalysis already rejected impossible (lit, type)
@@ -205,11 +316,45 @@ public struct Planner {
         }
     }
 
+    private static func predicateType(for op: QueryAST.ComparisonOp) -> Select.PredicateType {
+        switch op {
+        case .eq: return .eq
+        case .ne: return .ne
+        case .lt: return .lt
+        case .le: return .le
+        case .gt: return .gt
+        case .ge: return .ge
+        }
+    }
+
+    private static func aggrFunction(for function: QueryAST.AggregateFunction) -> HashAggregation.AggrFunc.Function {
+        switch function {
+        case .count: return .count
+        case .sum: return .sum
+        case .min: return .min
+        case .max: return .max
+        }
+    }
+
+    /// `Register.Kind` a NULL `MIN`/`MAX` result should carry as metadata.
+    /// Never actually read back (the register is NULL), so an absent `tclass`
+    /// (can't happen for `.min`/`.max` — their arg is never nil) just falls
+    /// back to `.int64`.
+    private static func registerKind(for tclass: SchemaType.Class?) -> Register.Kind {
+        switch tclass {
+        case .integer, nil: return .int64
+        case .double: return .double
+        case .bool: return .bool
+        case .char: return .char16
+        }
+    }
+
 }
 
 /// Compact hashable key for `(scanIndex, columnIndex)` so we don't need an
-/// outer dictionary keyed on `BoundAttr` (which isn't Hashable).
-private struct SlotKey: Hashable {
+/// outer dictionary keyed on `BoundAttr` (which isn't Hashable). Shared with
+/// `SemanticAnalysis` for its GROUP BY/ORDER BY membership checks.
+struct SlotKey: Hashable {
     let scanIndex: Int
     let columnIndex: Int
     init(_ s: Int, _ c: Int) { self.scanIndex = s; self.columnIndex = c }

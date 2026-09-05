@@ -147,10 +147,8 @@ extension Database {
             throw DatabaseError.unknownColumn
         }
         let column = table.columns[columnIndex]
-        let keyKind: SchemaIndex.KeyKind
-        switch column.type.tclass {
-        case .integer: keyKind = .int64
-        case .char: keyKind = .char16
+        guard let keyKind = column.type.tclass.indexKeyKind else {
+            throw DatabaseError.invalidData
         }
 
         let segmentId = allocateIndexSegmentId()

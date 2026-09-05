@@ -393,6 +393,33 @@ struct OperatorsSuite {
         #expect(Self.sortOutput(output.contents) == expected)
     }
 
+    /// Two left rows share a join key that matches one right row — every
+    /// left row must fan out into its own output row. Previously the second
+    /// left row silently overwrote the first in the hash table and only one
+    /// row was emitted.
+    @Test func hashJoinDuplicateLeftKeys() {
+        let leftLayout: [TestSource.Column] = [.int64, .int64]
+        let leftRows: [[TestSource.ColumnValue]] = [
+            [.int(1), .int(100)],
+            [.int(1), .int(200)],
+            [.int(2), .int(300)],
+        ]
+        let rightLayout: [TestSource.Column] = [.int64, .int64]
+        let rightRows: [[TestSource.ColumnValue]] = [
+            [.int(1), .int(9)]
+        ]
+        let left = TestSource(layout: leftLayout, rows: leftRows)
+        let right = TestSource(layout: rightLayout, rows: rightRows)
+        let join = HashJoin(inputLeft: left, inputRight: right, attrIndexLeft: 0, attrIndexRight: 0)
+        let output = TextOutput()
+        let print = Print(input: join, stream: output)
+        print.open()
+        while print.next() {}
+        print.close()
+        let expected = "1,100,1,9\n" + "1,200,1,9\n"
+        #expect(Self.sortOutput(output.contents) == expected)
+    }
+
     // MARK: - HashAggregation
 
     @Test func hashAggregationMinMax() {
@@ -429,6 +456,21 @@ struct OperatorsSuite {
         while print.next() {}
         print.close()
         let expected = ("24002,3,2\n" + "29555,2,1\n")
+        #expect(Self.sortOutput(output.contents) == expected)
+    }
+
+    /// A pure `GROUP BY` with no aggregate functions is a legitimate
+    /// dedup-by-group query. Previously it produced zero output rows because
+    /// the build loop `continue`d before ever recording the group key.
+    @Test func hashAggregationNoAggrFuncsDedupsGroups() {
+        let source = TestSource(layout: Self.studentsLayout, rows: Self.relationStudents)
+        let agg = HashAggregation(input: source, groupByAttrs: [1], aggrFuncs: [])
+        let output = TextOutput()
+        let print = Print(input: agg, stream: output)
+        print.open()
+        while print.next() {}
+        print.close()
+        let expected = ("Feuerbach       \n" + "Fichte          \n" + "Xenokrates      \n")
         #expect(Self.sortOutput(output.contents) == expected)
     }
 

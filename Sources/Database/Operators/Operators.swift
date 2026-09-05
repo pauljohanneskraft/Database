@@ -22,6 +22,10 @@ public final class Print: UnaryOperator, Operator {
         let row = input.getOutput()
         for (index, value) in row.enumerated() {
             if index > 0 { stream.write(",") }
+            if value.isNull {
+                stream.write("NULL")
+                continue
+            }
             switch value.kind {
             case .int64:
                 stream.write(String(value.asInt))
@@ -149,13 +153,20 @@ public final class Select: UnaryOperator, Operator {
 
     private let select: ([Register]) -> Bool
 
-    public init(input: any Operator, predicate: PredicateAttributeInt64) {
-        let attrIndex = predicate.attrIndex
-        let constant = predicate.constant
-        let p = predicate.predicateType
-        self.select = { row in
-            let lhs = row[attrIndex].asInt
-            switch p {
+    /// Builds the shared `select` closure for all four `PredicateAttribute*`
+    /// constant-comparison inits: each just encodes its constant into a
+    /// `Register` once and compares via `Register`'s `Comparable`
+    /// conformance, so ordering (including `.bool`'s `false < true`) is
+    /// defined in exactly one place (`Register.swift`) rather than
+    /// re-implemented per type.
+    private static func makeSelect(
+        attrIndex: Int,
+        constant: Register,
+        predicateType: PredicateType
+    ) -> ([Register]) -> Bool {
+        { row in
+            let lhs = row[attrIndex]
+            switch predicateType {
             case .eq: return lhs == constant
             case .ne: return lhs != constant
             case .lt: return lhs < constant
@@ -164,64 +175,41 @@ public final class Select: UnaryOperator, Operator {
             case .ge: return lhs >= constant
             }
         }
+    }
+
+    public init(input: any Operator, predicate: PredicateAttributeInt64) {
+        self.select = Self.makeSelect(
+            attrIndex: predicate.attrIndex,
+            constant: Register.from(int: predicate.constant),
+            predicateType: predicate.predicateType
+        )
         super.init(input: input)
     }
 
     public init(input: any Operator, predicate: PredicateAttributeChar16) {
-        let attrIndex = predicate.attrIndex
-        let constant = predicate.constant
-        let p = predicate.predicateType
-        // Encode the constant once into a Register to leverage 16-byte equality
-        // and lex ordering identical to the rest of the system.
-        let constReg = Register.from(string: constant)
-        self.select = { row in
-            let lhs = row[attrIndex]
-            switch p {
-            case .eq: return lhs == constReg
-            case .ne: return lhs != constReg
-            case .lt: return lhs < constReg
-            case .le: return lhs <= constReg
-            case .gt: return lhs > constReg
-            case .ge: return lhs >= constReg
-            }
-        }
+        self.select = Self.makeSelect(
+            attrIndex: predicate.attrIndex,
+            constant: Register.from(string: predicate.constant),
+            predicateType: predicate.predicateType
+        )
         super.init(input: input)
     }
 
     public init(input: any Operator, predicate: PredicateAttributeDouble) {
-        let attrIndex = predicate.attrIndex
-        let constant = predicate.constant
-        let p = predicate.predicateType
-        self.select = { row in
-            let lhs = row[attrIndex].asDouble
-            switch p {
-            case .eq: return lhs == constant
-            case .ne: return lhs != constant
-            case .lt: return lhs < constant
-            case .le: return lhs <= constant
-            case .gt: return lhs > constant
-            case .ge: return lhs >= constant
-            }
-        }
+        self.select = Self.makeSelect(
+            attrIndex: predicate.attrIndex,
+            constant: Register.from(double: predicate.constant),
+            predicateType: predicate.predicateType
+        )
         super.init(input: input)
     }
 
     public init(input: any Operator, predicate: PredicateAttributeBool) {
-        let attrIndex = predicate.attrIndex
-        let constant = predicate.constant
-        let p = predicate.predicateType
-        self.select = { row in
-            let lhs = row[attrIndex].asBool
-            switch p {
-            case .eq: return lhs == constant
-            case .ne: return lhs != constant
-            // false < true ordering for completeness.
-            case .lt: return !lhs && constant
-            case .le: return !lhs || (lhs == constant)
-            case .gt: return lhs && !constant
-            case .ge: return lhs || (lhs == constant)
-            }
-        }
+        self.select = Self.makeSelect(
+            attrIndex: predicate.attrIndex,
+            constant: Register.from(bool: predicate.constant),
+            predicateType: predicate.predicateType
+        )
         super.init(input: input)
     }
 
@@ -388,13 +376,20 @@ private func makeComparator(criteria: [Sort.Criterion]) -> ([Register], [Registe
 
 // MARK: - HashJoin
 
-/// Inner equi-join on one attribute; left input must have unique keys.
-/// Builds a hash table on the entire left input on the first `next()`,
-/// then probes the right input one tuple at a time.
+/// Inner equi-join on one attribute. Builds a hash table (key → all matching
+/// left rows) on the entire left input on the first `next()`, then probes the
+/// right input one tuple at a time, fanning out one output row per matching
+/// left row — standard relational equi-join semantics, not restricted to
+/// unique keys on either side.
 public final class HashJoin: BinaryOperator, Operator {
     private let attrIndexLeft: Int
     private let attrIndexRight: Int
-    private var leftValues: [Register: [Register]] = [:]
+    private var leftValues: [Register: [[Register]]] = [:]
+    /// Left-side rows matching the right row currently being probed, and how
+    /// far through them `next()` has fanned out.
+    private var pendingMatches: [[Register]] = []
+    private var pendingIndex = 0
+    private var currentRightRow: [Register] = []
     private var output: [Register] = []
 
     public init(
@@ -414,21 +409,29 @@ public final class HashJoin: BinaryOperator, Operator {
     }
 
     public func next() -> Bool {
+        if pendingIndex < pendingMatches.count {
+            output = pendingMatches[pendingIndex] + currentRightRow
+            pendingIndex += 1
+            return true
+        }
+
         // Build phase: drain the left input on the first call. Subsequent
         // calls fall straight through (inputLeft.next() returns false).
         while inputLeft.next() {
             let row = inputLeft.getOutput()
             let key = row[attrIndexLeft].copy()
-            leftValues[key] = snapshot(row)
+            leftValues[key, default: []].append(snapshot(row))
         }
 
         while inputRight.next() {
             let row = inputRight.getOutput()
             let key = row[attrIndexRight]
-            if let leftRow = leftValues[key] {
-                output = leftRow + row
-                return true
-            }
+            guard let matches = leftValues[key], !matches.isEmpty else { continue }
+            currentRightRow = row
+            pendingMatches = matches
+            pendingIndex = 1
+            output = matches[0] + row
+            return true
         }
         return false
     }
@@ -437,6 +440,8 @@ public final class HashJoin: BinaryOperator, Operator {
         inputLeft.close()
         inputRight.close()
         leftValues.removeAll()
+        pendingMatches.removeAll()
+        pendingIndex = 0
         output.removeAll()
     }
 
@@ -451,9 +456,17 @@ public final class HashAggregation: UnaryOperator, Operator {
         public enum Function: Sendable { case min, max, sum, count }
         public let function: Function
         public let attrIndex: Int
-        public init(function: Function, attrIndex: Int) {
+        /// Value to emit for this aggregate when the (ungrouped) input has
+        /// zero rows: the identity element `0` for `.count`/`.sum`, or a NULL
+        /// register for `.min`/`.max` (there's no such thing as the min/max of
+        /// an empty set). Always defined, so an ungrouped aggregate query
+        /// always emits its mandatory single row regardless of which
+        /// functions it mixes.
+        public let emptyResult: Register
+        public init(function: Function, attrIndex: Int, emptyResult: Register = Register.from(int: 0)) {
             self.function = function
             self.attrIndex = attrIndex
+            self.emptyResult = emptyResult
         }
     }
 
@@ -484,7 +497,13 @@ public final class HashAggregation: UnaryOperator, Operator {
             let row = input.getOutput()
             let key = groupByAttrs.map { row[$0].copy() }
 
-            if aggrFuncs.isEmpty { continue }
+            if aggrFuncs.isEmpty {
+                // Pure `GROUP BY` with no aggregate functions is a dedup-by-
+                // group query — still record the key so it appears once in
+                // the output, just with no aggregate columns to compute.
+                values[key] = []
+                continue
+            }
 
             let keyDidNotExist = (values[key] == nil)
             var group = values[key] ?? Array(repeating: Register(), count: aggrFuncs.count)
@@ -493,10 +512,13 @@ public final class HashAggregation: UnaryOperator, Operator {
                 let attr = row[fn.attrIndex]
                 switch fn.function {
                 case .sum:
-                    group[i] =
-                        keyDidNotExist
-                        ? attr.copy()
-                        : Register.from(int: group[i].asInt &+ attr.asInt)
+                    if keyDidNotExist {
+                        group[i] = attr.copy()
+                    } else if attr.kind == .double {
+                        group[i] = Register.from(double: group[i].asDouble + attr.asDouble)
+                    } else {
+                        group[i] = Register.from(int: group[i].asInt &+ attr.asInt)
+                    }
                 case .count:
                     group[i] =
                         keyDidNotExist
@@ -518,6 +540,15 @@ public final class HashAggregation: UnaryOperator, Operator {
 
         for (key, group) in values {
             output.append(key + group)
+        }
+
+        // An ungrouped aggregate (no GROUP BY) over zero input rows must
+        // still emit exactly one row per SQL semantics (e.g. `COUNT(*)` = 0)
+        // — unlike the grouped case (0 groups → 0 rows, which is already
+        // correct). Every `AggrFunc.emptyResult` is defined (NULL for
+        // `.min`/`.max`), so this row is unconditional.
+        if output.isEmpty, groupByAttrs.isEmpty, !aggrFuncs.isEmpty {
+            output.append(aggrFuncs.map(\.emptyResult))
         }
 
         return !output.isEmpty

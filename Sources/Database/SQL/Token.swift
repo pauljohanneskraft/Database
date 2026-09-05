@@ -15,6 +15,10 @@ public enum Token: Equatable, Sendable {
     case select, from, whereKW, and, not, trueKW, falseKW
     // Clause keywords.
     case order, by, group, asc, desc
+    // `count`/`sum`/`min`/`max` are NOT keywords here — they lex as plain
+    // `.identifier`s so existing schemas/queries using them as column/table
+    // names keep working. The parser recognizes them contextually (an
+    // identifier matching one of those names immediately followed by `(`).
     // Set-operator keywords.
     case union, intersect, except, all
     // DDL / DML keywords.
@@ -27,7 +31,7 @@ public enum Token: Equatable, Sendable {
     case doubleLit(Double)
     case stringLit(String)
     // Punctuation.
-    case star, comma, dot, equal, notEqual, lparen, rparen, semicolon
+    case star, comma, dot, equal, notEqual, less, lessEqual, greater, greaterEqual, lparen, rparen, semicolon
     // Terminators.
     case eof
 }

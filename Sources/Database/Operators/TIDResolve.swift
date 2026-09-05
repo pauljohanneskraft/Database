@@ -39,26 +39,9 @@ public final class TIDResolve: UnaryOperator, Operator {
             return false
         }
 
-        var cursor = 0
-        for (i, column) in table.columns.enumerated() {
-            switch column.type.tclass {
-            case .integer:
-                if cursor + 4 > Int(bytesRead) { return false }
-                let v = readBuffer.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: cursor, as: Int32.self) }
-                output[i].setInt(Int64(v))
-                cursor += 4
-            case .char:
-                let length = Int(column.type.length)
-                if cursor + length > Int(bytesRead) { return false }
-                // Content runs up to the first NUL fill byte, or the whole field.
-                var end = cursor
-                let fieldEnd = cursor + length
-                while end < fieldEnd && readBuffer[end] != 0 { end += 1 }
-                output[i].setString(String(decoding: readBuffer[cursor..<end], as: UTF8.self))
-                cursor += length
-            }
+        return decodeTuple(columns: table.columns, buffer: readBuffer, bytesRead: Int(bytesRead)) { i, value in
+            output[i].assign(from: value)
         }
-        return true
     }
 
     public func close() {

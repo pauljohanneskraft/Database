@@ -1,8 +1,11 @@
 /// Hand-written SQL lexer. Recognises a small dialect: SELECT / FROM /
-/// WHERE / AND / NOT / TRUE / FALSE (case-insensitive), identifiers,
-/// integer / double / single- or double-quoted string literals, and the
-/// punctuation needed for the parser (`*`, `,`, `.`, `=`, `!=`, `(`, `)`,
-/// `;`). Whitespace is skipped; comments are not supported.
+/// WHERE / AND / NOT / TRUE / FALSE / ORDER / BY / GROUP / ASC / DESC
+/// (case-insensitive), identifiers, integer / double / single- or
+/// double-quoted string literals, and the punctuation needed for the parser
+/// (`*`, `,`, `.`, `=`, `!=`, `<`, `<=`, `>`, `>=`, `(`, `)`, `;`).
+/// COUNT / SUM / MIN / MAX are NOT keywords — they lex as identifiers and are
+/// recognised contextually by the parser (see `Parser.aggregateFunction`).
+/// Whitespace is skipped; comments are not supported.
 public struct Lexer {
     private let source: [Character]
     private var index: Int = 0
@@ -50,6 +53,20 @@ public struct Lexer {
                 return TokenWithSpan(token: .notEqual, span: start)
             }
             throw SQLError.lex(start, "expected `=` after `!`")
+        case "<":
+            advance()
+            if peek() == "=" {
+                advance()
+                return TokenWithSpan(token: .lessEqual, span: start)
+            }
+            return TokenWithSpan(token: .less, span: start)
+        case ">":
+            advance()
+            if peek() == "=" {
+                advance()
+                return TokenWithSpan(token: .greaterEqual, span: start)
+            }
+            return TokenWithSpan(token: .greater, span: start)
         case "'", "\"":
             return TokenWithSpan(token: try readString(quote: c, start: start), span: start)
         default:

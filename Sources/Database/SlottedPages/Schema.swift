@@ -8,6 +8,8 @@ public struct SchemaType: Codable, Equatable, Sendable {
     public enum Class: String, Codable, Sendable {
         case integer
         case char
+        case double
+        case bool
     }
 
     public let tclass: Class
@@ -19,6 +21,8 @@ public struct SchemaType: Codable, Equatable, Sendable {
     }
 
     public static let integer = SchemaType(tclass: .integer, length: 0)
+    public static let double = SchemaType(tclass: .double, length: 8)
+    public static let bool = SchemaType(tclass: .bool, length: 1)
 
     public static func char(length: UInt32) -> SchemaType {
         SchemaType(tclass: .char, length: length)
@@ -28,6 +32,23 @@ public struct SchemaType: Codable, Equatable, Sendable {
         switch tclass {
         case .integer: return "integer"
         case .char: return "char"
+        case .double: return "double"
+        case .bool: return "bool"
+        }
+    }
+}
+
+extension SchemaType.Class {
+    /// The `BTree` key representation used for a secondary index over this
+    /// column type, or `nil` if the type isn't indexable (no fixed-width,
+    /// totally-ordered key representation). Single source of truth for
+    /// "is this type indexable" — used for `CREATE INDEX`, single-column
+    /// PRIMARY KEY validation, and PRIMARY KEY auto-indexing.
+    public var indexKeyKind: SchemaIndex.KeyKind? {
+        switch self {
+        case .integer: return .int64
+        case .char: return .char16
+        case .double, .bool: return nil
         }
     }
 }

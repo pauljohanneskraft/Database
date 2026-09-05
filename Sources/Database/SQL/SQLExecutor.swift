@@ -102,19 +102,12 @@ public struct SQLExecutor {
         }
         var rendered: [String] = []
         for (col, lit) in zip(table.columns, ast.values) {
-            switch (lit, col.type.tclass) {
-            case (.int(let v), .integer):
-                rendered.append(String(v))
-            case (.string(let v), .char):
-                rendered.append(v)
-            case (.int(let v), .char):
-                throw SQLError.bind("column `\(col.id)` is char but value is integer `\(v)`")
-            case (.string(let v), .integer):
-                throw SQLError.bind("column `\(col.id)` is integer but value is string `\(v)`")
-            case (.double(let v), _):
-                throw SQLError.bind("double literal `\(v)` is not yet supported for stored columns")
-            case (.bool(let v), _):
-                throw SQLError.bind("bool literal `\(v)` is not yet supported for stored columns")
+            try SemanticAnalysis.checkLiteralType(lit, name: col.id, type: col.type)
+            switch lit {
+            case .int(let v): rendered.append(String(v))
+            case .string(let v): rendered.append(v)
+            case .double(let v): rendered.append(String(v))
+            case .bool(let v): rendered.append(v ? "true" : "false")
             }
         }
         _ = try db.insert(table: table, values: rendered)

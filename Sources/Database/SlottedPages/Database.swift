@@ -135,6 +135,15 @@ public final class Database {
         if existingSchema.tables.contains(where: { $0.id == id }) {
             throw DatabaseError.duplicateTable
         }
+        // A single-column PRIMARY KEY on a non-indexable type would silently
+        // get no uniqueness enforcement at all (see the auto-index guard
+        // below) — fail loudly instead, before any segments are allocated.
+        if primaryKey.count == 1,
+            let pkCol = columns.first(where: { $0.id == primaryKey[0] }),
+            pkCol.type.tclass.indexKeyKind == nil
+        {
+            throw DatabaseError.invalidData
+        }
         let n = UInt16(existingSchema.tables.count)
         let spSeg = 10 + 2 * n
         let fsiSeg = 11 + 2 * n
@@ -161,7 +170,7 @@ public final class Database {
         // Auto-index a single-column primary key on an indexable type.
         if primaryKey.count == 1,
             let pkCol = table.columns.first(where: { $0.id == primaryKey[0] }),
-            pkCol.type.tclass == .integer || pkCol.type.tclass == .char
+            pkCol.type.tclass.indexKeyKind != nil
         {
             try createIndex(name: "pk_\(id)", tableId: id, columnName: pkCol.id)
         }
@@ -184,13 +193,34 @@ public final class Database {
         for (column, s) in zip(table.columns, values) {
             switch column.type.tclass {
             case .integer:
-                let intValue = Int32(s) ?? 0
+                guard let intValue = Int32(s) else {
+                    throw DatabaseError.invalidData
+                }
                 withUnsafeBytes(of: intValue) { buffer.append(contentsOf: $0) }
             case .char:
                 let length = Int(column.type.length)
                 let chars = Array(s.utf8)
                 for j in 0..<length {
                     buffer.append(j < chars.count ? chars[j] : 0x00)  // NUL fill
+                }
+            case .double:
+                // NaN is rejected outright: `Register`'s hash/equality treat
+                // it with IEEE-754 semantics (NaN != NaN) for correct `=`/`<`
+                // predicate behavior, which means two stored NaNs would never
+                // group together in GROUP BY / HashJoin. Simplest fix is to
+                // never let one be stored.
+                guard let doubleValue = Double(s), !doubleValue.isNaN else {
+                    throw DatabaseError.invalidData
+                }
+                withUnsafeBytes(of: doubleValue) { buffer.append(contentsOf: $0) }
+            case .bool:
+                switch s.lowercased() {
+                case "true":
+                    buffer.append(1)
+                case "false":
+                    buffer.append(0)
+                default:
+                    throw DatabaseError.invalidData
                 }
             }
         }
@@ -221,23 +251,12 @@ public final class Database {
         }
 
         var out: [String] = []
-        var cursor = 0
-        for column in table.columns {
-            switch column.type.tclass {
-            case .integer:
-                if cursor + 4 > Int(read) { return out }
-                let v = readBuffer.withUnsafeBytes { $0.load(fromByteOffset: cursor, as: Int32.self) }
-                out.append(String(v))
-                cursor += 4
-            case .char:
-                let length = Int(column.type.length)
-                if cursor + length > Int(read) { return out }
-                // Content runs up to the first NUL fill byte, or the whole field.
-                var end = cursor
-                let fieldEnd = cursor + length
-                while end < fieldEnd && readBuffer[end] != 0 { end += 1 }
-                out.append(String(decoding: readBuffer[cursor..<end], as: UTF8.self))
-                cursor += length
+        _ = decodeTuple(columns: table.columns, buffer: readBuffer, bytesRead: Int(read)) { _, value in
+            switch value {
+            case .int(let v): out.append(String(v))
+            case .string(let v): out.append(v)
+            case .double(let v): out.append(String(v))
+            case .bool(let v): out.append(v ? "true" : "false")
             }
         }
         return out
