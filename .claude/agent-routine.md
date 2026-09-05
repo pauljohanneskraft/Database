@@ -23,8 +23,9 @@ to make a change easier — if one genuinely blocks the issue, hand the issue ba
 session is Linux with no Swift toolchain. Do not spend a run trying to install one.
 
 Verification happens in CI (`.github/workflows/ci.yml`, macos-15) after you push, and you read the
-results with `gh pr checks` on your next run. CI runs the three commands from CLAUDE.md's Build /
-test section, in that order, and stops at the first failure — so a lint violation means the tests
+results with `gh pr checks` on your next run. CI runs the three commands listed at the top of
+CLAUDE.md's Build / test section — lint, then `swift build --build-tests`, then
+`swift test --no-parallel` — and stops at the first failure, so a lint violation means the tests
 never ran.
 
 Because CI is your only compiler, before every push:

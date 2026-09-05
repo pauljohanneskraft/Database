@@ -31,16 +31,25 @@ swift-tools 6.2. macOS 13+, Apple Silicon. No external native dependencies.
 
 ## Build / test
 
+CI (`.github/workflows/ci.yml`, macos-15) runs exactly these three, in this order, and stops at the
+first failure:
+
 ```sh
 swift format lint --strict --recursive Sources Tests Package.swift
-swift build
-swift test --no-parallel                    # always serial — see below
+swift build --build-tests
+swift test --no-parallel
+```
+
+Also useful locally:
+
+```sh
 swift test --no-parallel --filter someTest  # single test (matches by name)
 swift build -c release                      # benchmark builds
 ```
 
 `--no-parallel` is mandatory, not a fallback: the test harness uses a process-global `chdir` to
-place segment files (`Tests/DatabaseTests/TestSupport.swift`), so suites corrupt each other's
-files when run concurrently. CI runs the three commands above in that order, and `--strict`
-promotes every lint warning to an error — `.swift-format` sets 4-space indentation, a 120-column
-line length and at most one consecutive blank line.
+place segment files (`Tests/DatabaseTests/TestSupport.swift`), so suites corrupt each other's files
+when run concurrently. `--build-tests` is what makes the build step catch a broken test target
+rather than leaving it for the test step. `--strict` promotes every lint warning to an error, and
+`.swift-format` sets 4-space indentation, a 120-column line length and at most one consecutive
+blank line.
