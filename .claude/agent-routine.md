@@ -51,8 +51,9 @@ No limit on open agent pull requests. Work existing ones first — red CI, then 
 comments, then incomplete drafts — but when every open agent PR is waiting on CI or on review, start
 a new `agent-ready` issue rather than stopping. A new PR is better than no development.
 
-The `improvements` branch is several commits ahead of `main` and unpushed. Agent PRs branch from
-`main`, so expect conflicts with that work until it lands.
+Agent PRs branch from `main`, so they can conflict with longer-lived work that has not landed yet.
+That is expected — resolve it when a reviewer asks, and do not go hunting for unmerged branches to
+reconcile against.
 
 ## Human-set stop signs
 
