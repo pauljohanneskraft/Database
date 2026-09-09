@@ -41,6 +41,19 @@ Because CI is your only compiler, before every push:
 - Tests use **swift-testing** (`@Test`, `#expect`), not XCTest.
 - Comments explain *why* a thing is done that way, not what the line does.
 
+## Review
+
+Request review from `pauljohanneskraft` when a pull request is ready.
+
 ## Concurrency
 
-One agent PR in flight at a time.
+No limit on open agent pull requests. Work existing ones first — red CI, then unaddressed review
+comments, then incomplete drafts — but when every open agent PR is waiting on CI or on review, start
+a new `agent-ready` issue rather than stopping. A new PR is better than no development.
+
+The `improvements` branch is several commits ahead of `main` and unpushed. Agent PRs branch from
+`main`, so expect conflicts with that work until it lands.
+
+## Human-set stop signs
+
+`agent-blocked` on an issue or a pull request means hands off. Never add or remove it yourself.
